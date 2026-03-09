@@ -3,10 +3,9 @@ Lightweight metadata extractor — runs in parallel with analyst.
 Extracts structured entities from raw research text using regex + LLM.
 """
 import re
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-import config
+from agents.llm_factory import get_llm
 
 DATE_PATTERN = re.compile(
     r'\b(20\d{2}|19\d{2})\b'
@@ -37,16 +36,11 @@ def run_metadata_extractor(research_data: str, query: str) -> dict:
 
     # LLM extraction for entities and claims
     try:
-        llm = ChatGroq(
-            model=config.GROQ_MODEL,
-            temperature=0,
-            api_key=config.GROQ_API_KEY,
-        )
         prompt = ChatPromptTemplate.from_messages([
             ("system", EXTRACT_PROMPT),
             ("human", "Research text (first 3000 chars):\n\n{text}"),
         ])
-        result = (prompt | llm | StrOutputParser()).invoke({"text": research_data[:3000]})
+        result = (prompt | get_llm(0.0) | StrOutputParser()).invoke({"text": research_data[:3000]})
 
         # Parse the structured output
         metadata = {

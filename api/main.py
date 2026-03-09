@@ -30,8 +30,9 @@ from pydantic import BaseModel
 
 from agents.researcher import run_researcher
 from agents.analyst import run_analyst, analyst_to_str
-from agents.writer import run_writer, writer_to_markdown
+from agents.writer import run_writer, writer_to_markdown, astream_writer
 from agents.reviewer import run_reviewer
+from memory import remember_query, get_memory
 from agents.metadata_extractor import run_metadata_extractor, metadata_to_context
 from agents.debater import run_optimist, run_skeptic
 from agents.judge import run_judge
@@ -64,6 +65,8 @@ app.add_middleware(
 
 class ResearchRequest(BaseModel):
     query: str
+    language: str = "English"
+    session_id: str = ""
 
 
 class ResumeRequest(BaseModel):
@@ -84,7 +87,20 @@ async def run_in_thread(fn, *args):
 
 def _is_rate_limit(e: Exception) -> bool:
     s = str(e).lower()
-    return "rate limit" in s or "429" in s or "ratelimit" in s or "too many requests" in s
+    return "rate limit" in s or "429" in s or "ratelimit" in s or "too many requests" in s or "rate_limit_exceeded" in s
+
+
+def _friendly_error(e: Exception) -> str:
+    """Return a user-friendly error message for common failures."""
+    msg = str(e)
+    if "429" in msg or "rate_limit" in msg.lower() or "rate limit" in msg.lower():
+        if "tokens per day" in msg.lower() or "tpd" in msg.lower():
+            return ("Daily token quota exhausted for both models. "
+                    "Please wait ~24 hours for the Groq free tier to reset, "
+                    "or upgrade at console.groq.com/settings/billing.")
+        return ("Rate limited by Groq. The fallback model was also unavailable. "
+                "Please wait a minute and try again.")
+    return msg
 
 
 def _count_urls(text: str) -> int:
@@ -100,8 +116,8 @@ MAX_RETRIES = 3
 
 # ─── Standard Streaming Pipeline ──────────────────────────────────────────────
 
-async def stream_pipeline(query: str):
-    yield sse("start", {"query": query, "timestamp": datetime.now().isoformat()})
+async def stream_pipeline(query: str, language: str = "English", session_id: str = ""):
+    yield sse("start", {"query": query, "language": language, "timestamp": datetime.now().isoformat()})
 
     # ── RAG check — look for cached similar report ───────────────────────
     try:
@@ -144,7 +160,7 @@ async def stream_pipeline(query: str):
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "researcher", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Researcher failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Analyst ─────────────────────────────────────────────────────────────
@@ -175,7 +191,7 @@ async def stream_pipeline(query: str):
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "analyst", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Analyst failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Metadata Extractor (runs after analyst) ─────────────────────────────
@@ -207,30 +223,23 @@ async def stream_pipeline(query: str):
             "message": "Composing report..." if revision_count == 0 else f"Revising report (round {revision_count})...",
         })
 
-        writer_output = None
-        report_md = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                t0 = time.time()
-                writer_output = await run_in_thread(run_writer, enriched_analysis, query, revision_instructions)
-                report_md = writer_to_markdown(writer_output)
-                yield sse("agent_done", {
-                    "agent": "writer",
-                    "duration": round(time.time() - t0, 1),
-                    "chars": len(report_md),
-                    "stat": f"{writer_output.word_count:,} words" + (f" (rev {revision_count})" if revision_count > 0 else ""),
-                    "preview": report_md[:600],
-                })
-                break
-            except Exception as e:
-                if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
-                    delay = 2 ** attempt
-                    yield sse("agent_retry", {"agent": "writer", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
-                    await asyncio.sleep(delay)
-                else:
-                    yield sse("agent_error", {"agent": "writer", "message": str(e)})
-                    yield sse("pipeline_error", {"message": f"Writer failed: {e}"})
-                    return
+        report_md = ""
+        try:
+            t0 = time.time()
+            async for chunk in astream_writer(enriched_analysis, query, revision_instructions, language):
+                report_md += chunk
+                yield sse("writer_token", {"token": chunk})
+            yield sse("agent_done", {
+                "agent": "writer",
+                "duration": round(time.time() - t0, 1),
+                "chars": len(report_md),
+                "stat": f"{len(report_md.split()):,} words" + (f" (rev {revision_count})" if revision_count > 0 else ""),
+                "preview": report_md[:600],
+            })
+        except Exception as e:
+            yield sse("agent_error", {"agent": "writer", "message": str(e)})
+            yield sse("pipeline_error", {"message": _friendly_error(e)})
+            return
 
         # Reviewer
         yield sse("agent_start", {
@@ -243,7 +252,7 @@ async def stream_pipeline(query: str):
         for attempt in range(MAX_RETRIES):
             try:
                 t0 = time.time()
-                reviewer_output = await run_in_thread(run_reviewer, report_md, research_data, query)
+                reviewer_output = await run_in_thread(run_reviewer, report_md, research_data, query, language)
                 yield sse("agent_done", {
                     "agent": "reviewer",
                     "duration": round(time.time() - t0, 1),
@@ -258,7 +267,7 @@ async def stream_pipeline(query: str):
                     await asyncio.sleep(delay)
                 else:
                     yield sse("agent_error", {"agent": "reviewer", "message": str(e)})
-                    yield sse("pipeline_error", {"message": f"Reviewer failed: {e}"})
+                    yield sse("pipeline_error", {"message": _friendly_error(e)})
                     return
 
         revision_count += 1
@@ -296,11 +305,18 @@ async def stream_pipeline(query: str):
         "citation_stats": citation_stats,
     })
 
+    # ── Persist session memory ───────────────────────────────────────────────
+    if session_id:
+        try:
+            remember_query(session_id, query, report_id)
+        except Exception:
+            pass
+
 
 # ─── Debate Streaming Pipeline ────────────────────────────────────────────────
 
-async def stream_debate(query: str):
-    yield sse("start", {"query": query, "mode": "debate", "timestamp": datetime.now().isoformat()})
+async def stream_debate(query: str, language: str = "English", session_id: str = ""):
+    yield sse("start", {"query": query, "mode": "debate", "language": language, "timestamp": datetime.now().isoformat()})
 
     # ── Researcher ──────────────────────────────────────────────────────────
     yield sse("agent_start", {"agent": "researcher", "label": "Researcher", "message": "Searching the web..."})
@@ -325,7 +341,7 @@ async def stream_debate(query: str):
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "researcher", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Researcher failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Analyst ─────────────────────────────────────────────────────────────
@@ -350,7 +366,7 @@ async def stream_debate(query: str):
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "analyst", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Analyst failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Optimist ────────────────────────────────────────────────────────────
@@ -374,7 +390,7 @@ async def stream_debate(query: str):
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "optimist", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Optimist failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Skeptic ─────────────────────────────────────────────────────────────
@@ -398,7 +414,7 @@ async def stream_debate(query: str):
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "skeptic", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Skeptic failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Judge ───────────────────────────────────────────────────────────────
@@ -422,7 +438,7 @@ async def stream_debate(query: str):
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "judge", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Judge failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Save to DB ────────────────────────────────────────────────────────
@@ -446,6 +462,12 @@ async def stream_debate(query: str):
         "skeptic_report": skeptic_report,
         "citation_stats": citation_stats,
     })
+
+    if session_id:
+        try:
+            remember_query(session_id, query, report_id)
+        except Exception:
+            pass
 
 
 # ─── HITL Streaming Pipeline ──────────────────────────────────────────────────
@@ -517,7 +539,7 @@ async def stream_hitl(query: str):
 
     except Exception as e:
         yield sse("agent_error", {"agent": "researcher", "message": str(e)})
-        yield sse("pipeline_error", {"message": f"HITL researcher failed: {e}"})
+        yield sse("pipeline_error", {"message": _friendly_error(e)})
 
 
 async def stream_resume(session_id: str, feedback: str = ""):
@@ -574,7 +596,7 @@ async def stream_resume(session_id: str, feedback: str = ""):
         _hitl_sessions.pop(session_id, None)
 
     except Exception as e:
-        yield sse("pipeline_error", {"message": f"Resume failed: {e}"})
+        yield sse("pipeline_error", {"message": _friendly_error(e)})
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -587,7 +609,7 @@ async def research(req: ResearchRequest):
         raise HTTPException(status_code=500, detail="GROQ_API_KEY is not set on the server")
 
     return StreamingResponse(
-        stream_pipeline(req.query.strip()),
+        stream_pipeline(req.query.strip(), req.language, req.session_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -605,7 +627,7 @@ async def research_debate(req: ResearchRequest):
         raise HTTPException(status_code=500, detail="GROQ_API_KEY is not set on the server")
 
     return StreamingResponse(
-        stream_debate(req.query.strip()),
+        stream_debate(req.query.strip(), req.language, req.session_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
@@ -650,6 +672,12 @@ async def single_report(report_id: str):
     return data
 
 
+@app.get("/api/memory/{session_id}")
+async def memory_endpoint(session_id: str):
+    """Return past queries for a given client session."""
+    return {"session_id": session_id, "history": get_memory(session_id)}
+
+
 @app.get("/health")
 async def health():
     return {
@@ -658,5 +686,7 @@ async def health():
         "langsmith_tracing": config.LANGCHAIN_TRACING_V2 == "true",
         "supabase_configured": bool(config.SUPABASE_URL and config.SUPABASE_KEY),
         "model": config.GROQ_MODEL,
-        "features": ["standard", "debate", "hitl", "rag", "citations", "conditional_review"],
+        "features": ["standard", "debate", "hitl", "rag", "citations", "conditional_review",
+                     "streaming_writer", "session_memory", "multi_language", "pdf_export",
+                     "langsmith_eval"],
     }

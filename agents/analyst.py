@@ -1,7 +1,6 @@
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from agents.schemas import AnalysisOutput
-import config
+from agents.llm_factory import get_primary_llm, get_fallback_llm
 
 SYSTEM_PROMPT = """You are a Senior Data Analyst. You receive raw research
 findings and must produce a clear, structured analysis.
@@ -22,21 +21,15 @@ Be analytical, not creative. Stick to what the data shows.
 
 
 def build_analyst_chain():
-    llm = ChatGroq(
-        model=config.GROQ_MODEL,
-        temperature=0.2,
-        api_key=config.GROQ_API_KEY,
-    )
-    structured_llm = llm.with_structured_output(AnalysisOutput)
-
     prompt = ChatPromptTemplate.from_messages([
         ("system", SYSTEM_PROMPT),
         ("human", "Raw research data:\n\n{research_data}\n\n"
                   "Original query: {query}\n\n"
                   "Produce your structured analysis now."),
     ])
-
-    return prompt | structured_llm
+    primary_chain = prompt | get_primary_llm(0.2).with_structured_output(AnalysisOutput)
+    fallback_chain = prompt | get_fallback_llm(0.2).with_structured_output(AnalysisOutput)
+    return primary_chain.with_fallbacks([fallback_chain])
 
 
 def run_analyst(research_data: str, query: str) -> AnalysisOutput:

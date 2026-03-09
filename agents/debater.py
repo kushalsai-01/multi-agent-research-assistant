@@ -2,10 +2,9 @@
 Debate mode writers — Optimist and Skeptic perspectives.
 Two agents that argue different sides, used in debate pipeline.
 """
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-import config
+from agents.llm_factory import get_llm
 
 OPTIMIST_PROMPT = """You are the OPTIMIST researcher. You write a report that
 emphasizes the POSITIVE aspects, opportunities, benefits, and promising developments
@@ -40,17 +39,12 @@ Rules:
 
 def run_optimist(analysis: str, query: str) -> str:
     """Write the optimistic perspective report."""
-    llm = ChatGroq(
-        model=config.GROQ_MODEL,
-        temperature=0.5,
-        api_key=config.GROQ_API_KEY,
-    )
     prompt = ChatPromptTemplate.from_messages([
         ("system", OPTIMIST_PROMPT),
         ("human", "Topic: {query}\n\nResearch analysis:\n{analysis}\n\n"
                   "Write your optimist perspective report now."),
     ])
-    return (prompt | llm | StrOutputParser()).invoke({
+    return (prompt | get_llm(0.5) | StrOutputParser()).invoke({
         "analysis": analysis,
         "query": query,
     })
@@ -58,17 +52,12 @@ def run_optimist(analysis: str, query: str) -> str:
 
 def run_skeptic(analysis: str, query: str) -> str:
     """Write the skeptic/critical perspective report."""
-    llm = ChatGroq(
-        model=config.GROQ_MODEL,
-        temperature=0.5,
-        api_key=config.GROQ_API_KEY,
-    )
     prompt = ChatPromptTemplate.from_messages([
         ("system", SKEPTIC_PROMPT),
         ("human", "Topic: {query}\n\nResearch analysis:\n{analysis}\n\n"
                   "Write your skeptic analysis report now."),
     ])
-    return (prompt | llm | StrOutputParser()).invoke({
+    return (prompt | get_llm(0.5) | StrOutputParser()).invoke({
         "analysis": analysis,
         "query": query,
     })

@@ -1,7 +1,6 @@
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from agents.schemas import ReviewerOutput
-import config
+from agents.llm_factory import get_primary_llm, get_fallback_llm
 
 SYSTEM_PROMPT = """You are a Senior Editor and Quality Reviewer.
 
@@ -25,29 +24,31 @@ OUTPUT RULES:
 """
 
 
-def build_reviewer_chain():
-    llm = ChatGroq(
-        model=config.GROQ_MODEL,
-        temperature=0.2,
-        api_key=config.GROQ_API_KEY,
-    )
-    structured_llm = llm.with_structured_output(ReviewerOutput)
+def _lang_suffix(language: str) -> str:
+    if not language or language.lower() in ("english", "en"):
+        return ""
+    return f"\n\nIMPORTANT: Write the polished_report ENTIRELY in {language}. All headings, content, takeaways, and sources sections must be in {language}."
 
+
+def build_reviewer_chain(language: str = "English"):
+    lang_note = _lang_suffix(language)
+    system = SYSTEM_PROMPT + lang_note
     prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
+        ("system", system),
         ("human", "Original topic: {query}\n\n"
                   "Research data available:\n{research_data}\n\n"
                   "Report to review and improve:\n{report}\n\n"
                   "Score this report, provide the polished version, and if score < 7 "
                   "give specific revision instructions."),
     ])
+    primary_chain = prompt | get_primary_llm(0.2).with_structured_output(ReviewerOutput)
+    fallback_chain = prompt | get_fallback_llm(0.2).with_structured_output(ReviewerOutput)
+    return primary_chain.with_fallbacks([fallback_chain])
 
-    return prompt | structured_llm
 
-
-def run_reviewer(report: str, research_data: str, query: str) -> ReviewerOutput:
+def run_reviewer(report: str, research_data: str, query: str, language: str = "English") -> ReviewerOutput:
     """Run the reviewer chain and return structured ReviewerOutput."""
-    chain = build_reviewer_chain()
+    chain = build_reviewer_chain(language)
     return chain.invoke({
         "report": report,
         "research_data": research_data,

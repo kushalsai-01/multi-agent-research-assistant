@@ -39,11 +39,11 @@ async function readSSEStream(res, onEvent) {
 /**
  * Stream a standard research pipeline via SSE.
  */
-export async function streamResearch(query, onEvent) {
+export async function streamResearch(query, onEvent, { language = 'English', sessionId = '' } = {}) {
   const res = await fetch(`${API_BASE}/api/research`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, language, session_id: sessionId }),
   })
 
   if (!res.ok) {
@@ -57,11 +57,11 @@ export async function streamResearch(query, onEvent) {
 /**
  * Stream a debate pipeline via SSE.
  */
-export async function streamDebate(query, onEvent) {
+export async function streamDebate(query, onEvent, { language = 'English', sessionId = '' } = {}) {
   const res = await fetch(`${API_BASE}/api/research/debate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, language, session_id: sessionId }),
   })
 
   if (!res.ok) {
@@ -75,11 +75,11 @@ export async function streamDebate(query, onEvent) {
 /**
  * Stream a HITL pipeline via SSE (pauses after researcher).
  */
-export async function streamHitl(query, onEvent) {
+export async function streamHitl(query, onEvent, { language = 'English', sessionId = '' } = {}) {
   const res = await fetch(`${API_BASE}/api/research/hitl`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, language, session_id: sessionId }),
   })
 
   if (!res.ok) {
@@ -120,4 +120,13 @@ export async function fetchReport(id) {
   const res = await fetch(`${API_BASE}/api/reports/${id}`)
   if (!res.ok) throw new Error('Report not found')
   return res.json()
+}
+
+/** Fetch session memory (past queries) for a given session ID. */
+export async function fetchMemory(sessionId) {
+  if (!sessionId) return []
+  const res = await fetch(`${API_BASE}/api/memory/${sessionId}`)
+  if (!res.ok) return []
+  const d = await res.json()
+  return Array.isArray(d.history) ? d.history : []
 }
