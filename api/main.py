@@ -64,89 +64,142 @@ async def run_in_thread(fn, *args):
     return await loop.run_in_executor(None, fn, *args)
 
 
+def _is_rate_limit(e: Exception) -> bool:
+    s = str(e).lower()
+    return "rate limit" in s or "429" in s or "ratelimit" in s or "too many requests" in s
+
+
+def _count_urls(text: str) -> int:
+    return text.count("http://") + text.count("https://")
+
+
+def _word_count(text: str) -> int:
+    return len(text.split())
+
+
 # ─── Streaming pipeline ───────────────────────────────────────────────────────
 
 async def stream_pipeline(query: str):
+    MAX_RETRIES = 3
     yield sse("start", {"query": query, "timestamp": datetime.now().isoformat()})
 
     # ── Researcher ──────────────────────────────────────────────────────────
     yield sse("agent_start", {
         "agent": "researcher",
         "label": "Researcher",
-        "message": "Searching the web...",
+        "message": "Searching the web for sources...",
     })
-    try:
-        t0 = time.time()
-        research_data = await run_in_thread(run_researcher, query)
-        yield sse("agent_done", {
-            "agent": "researcher",
-            "duration": round(time.time() - t0, 1),
-            "chars": len(research_data),
-            "preview": research_data[:600],
-        })
-    except Exception as e:
-        yield sse("agent_error", {"agent": "researcher", "message": str(e)})
-        yield sse("pipeline_error", {"message": f"Researcher failed: {e}"})
-        return
+    research_data = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            t0 = time.time()
+            research_data = await run_in_thread(run_researcher, query)
+            urls_found = _count_urls(research_data)
+            yield sse("agent_done", {
+                "agent": "researcher",
+                "duration": round(time.time() - t0, 1),
+                "chars": len(research_data),
+                "stat": f"{urls_found} sources found",
+                "preview": research_data[:600],
+            })
+            break
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
+                delay = 2 ** attempt
+                yield sse("agent_retry", {"agent": "researcher", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
+                await asyncio.sleep(delay)
+            else:
+                yield sse("agent_error", {"agent": "researcher", "message": str(e)})
+                yield sse("pipeline_error", {"message": f"Researcher failed: {e}"})
+                return
 
     # ── Analyst ─────────────────────────────────────────────────────────────
     yield sse("agent_start", {
         "agent": "analyst",
         "label": "Analyst",
-        "message": "Extracting key insights...",
+        "message": f"Extracting insights from {_count_urls(research_data)} sources...",
     })
-    try:
-        t0 = time.time()
-        analysis = await run_in_thread(run_analyst, research_data, query)
-        yield sse("agent_done", {
-            "agent": "analyst",
-            "duration": round(time.time() - t0, 1),
-            "chars": len(analysis),
-            "preview": analysis[:600],
-        })
-    except Exception as e:
-        yield sse("agent_error", {"agent": "analyst", "message": str(e)})
-        yield sse("pipeline_error", {"message": f"Analyst failed: {e}"})
-        return
+    analysis = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            t0 = time.time()
+            analysis = await run_in_thread(run_analyst, research_data, query)
+            findings = analysis.count("##")
+            yield sse("agent_done", {
+                "agent": "analyst",
+                "duration": round(time.time() - t0, 1),
+                "chars": len(analysis),
+                "stat": f"{findings} insight sections",
+                "preview": analysis[:600],
+            })
+            break
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
+                delay = 2 ** attempt
+                yield sse("agent_retry", {"agent": "analyst", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
+                await asyncio.sleep(delay)
+            else:
+                yield sse("agent_error", {"agent": "analyst", "message": str(e)})
+                yield sse("pipeline_error", {"message": f"Analyst failed: {e}"})
+                return
 
     # ── Writer ──────────────────────────────────────────────────────────────
     yield sse("agent_start", {
         "agent": "writer",
         "label": "Writer",
-        "message": "Composing the report...",
+        "message": "Composing full report...",
     })
-    try:
-        t0 = time.time()
-        report = await run_in_thread(run_writer, analysis, query)
-        yield sse("agent_done", {
-            "agent": "writer",
-            "duration": round(time.time() - t0, 1),
-            "chars": len(report),
-            "preview": report[:600],
-        })
-    except Exception as e:
-        yield sse("agent_error", {"agent": "writer", "message": str(e)})
-        yield sse("pipeline_error", {"message": f"Writer failed: {e}"})
-        return
+    report = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            t0 = time.time()
+            report = await run_in_thread(run_writer, analysis, query)
+            wc = _word_count(report)
+            yield sse("agent_done", {
+                "agent": "writer",
+                "duration": round(time.time() - t0, 1),
+                "chars": len(report),
+                "stat": f"{wc:,} words written",
+                "preview": report[:600],
+            })
+            break
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
+                delay = 2 ** attempt
+                yield sse("agent_retry", {"agent": "writer", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
+                await asyncio.sleep(delay)
+            else:
+                yield sse("agent_error", {"agent": "writer", "message": str(e)})
+                yield sse("pipeline_error", {"message": f"Writer failed: {e}"})
+                return
 
     # ── Reviewer ────────────────────────────────────────────────────────────
     yield sse("agent_start", {
         "agent": "reviewer",
         "label": "Reviewer",
-        "message": "Running quality review...",
+        "message": "Running QA — checking quality & accuracy...",
     })
-    try:
-        t0 = time.time()
-        final_report = await run_in_thread(run_reviewer, report, research_data, query)
-        yield sse("agent_done", {
-            "agent": "reviewer",
-            "duration": round(time.time() - t0, 1),
-            "chars": len(final_report),
-        })
-    except Exception as e:
-        yield sse("agent_error", {"agent": "reviewer", "message": str(e)})
-        yield sse("pipeline_error", {"message": f"Reviewer failed: {e}"})
-        return
+    final_report = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            t0 = time.time()
+            final_report = await run_in_thread(run_reviewer, report, research_data, query)
+            yield sse("agent_done", {
+                "agent": "reviewer",
+                "duration": round(time.time() - t0, 1),
+                "chars": len(final_report),
+                "stat": f"{_word_count(final_report):,} words final",
+            })
+            break
+        except Exception as e:
+            if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
+                delay = 2 ** attempt
+                yield sse("agent_retry", {"agent": "reviewer", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
+                await asyncio.sleep(delay)
+            else:
+                yield sse("agent_error", {"agent": "reviewer", "message": str(e)})
+                yield sse("pipeline_error", {"message": f"Reviewer failed: {e}"})
+                return
 
     # ── Save to Supabase ─────────────────────────────────────────────────────
     report_id = None

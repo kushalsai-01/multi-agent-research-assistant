@@ -1,13 +1,13 @@
 ﻿import { useState, useCallback, useRef, useEffect } from "react"
-import { streamResearch } from "./api"
+import { streamResearch, fetchHistory, fetchReport } from "./api"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
 const AGENTS = [
-  { id: "researcher", label: "Researcher", detail: "Web search" },
-  { id: "analyst",   label: "Analyst",    detail: "Insights"   },
-  { id: "writer",    label: "Writer",     detail: "Report"     },
-  { id: "reviewer",  label: "Reviewer",   detail: "QA"         },
+  { id: "researcher", label: "Researcher", idle: "Web search" },
+  { id: "analyst",   label: "Analyst",    idle: "Insights"  },
+  { id: "writer",    label: "Writer",     idle: "Report"    },
+  { id: "reviewer",  label: "Reviewer",   idle: "QA"        },
 ]
 
 const EXAMPLES = [
@@ -26,22 +26,111 @@ function Dot({ status }) {
   return <span className={cls} />
 }
 
+function AgentCard({ a, s }) {
+  const status = s?.status || "idle"
+  let detail = a.idle
+  if (status === "running")  detail = s.detail || a.idle
+  if (status === "retrying") detail = s.detail || "Retrying..."
+  if (status === "done")     detail = s.stat || `${(s.chars || 0).toLocaleString()} chars`
+  if (status === "error")    detail = "failed"
+  const dotStatus = status === "retrying" ? "running" : status
+  const cardClass = status === "retrying" ? "running" : (status !== "idle" ? status : "")
+
+  return (
+    <div className={`agent ${cardClass}`}>
+      <div className="agent-head">
+        <span className="agent-name">{a.label}</span>
+        <Dot status={dotStatus} />
+      </div>
+      <div className={`agent-detail${status === "retrying" ? " agent-retry-text" : ""}`}>
+        {detail}
+      </div>
+      {status === "retrying" && s?.retryCount && (
+        <div className="agent-time">attempt {s.retryCount}/3</div>
+      )}
+      {status === "done" && s?.duration && (
+        <div className="agent-time">{s.duration}s</div>
+      )}
+    </div>
+  )
+}
+
+function HistoryDrawer({ open, onClose, onLoad }) {
+  const [items,   setItems]   = useState([])
+  const [loading, setLoading] = useState(false)
+  const [fetched, setFetched] = useState(false)
+
+  useEffect(() => {
+    if (open && !fetched) {
+      setFetched(true)
+      setLoading(true)
+      fetchHistory()
+        .then(d => setItems(Array.isArray(d) ? d : []))
+        .catch(() => setItems([]))
+        .finally(() => setLoading(false))
+    }
+    if (!open) setFetched(false)
+  }, [open, fetched])
+
+  const handleLoad = async (id) => {
+    const r = await fetchReport(id).catch(() => null)
+    if (r) { onLoad(r); onClose() }
+  }
+
+  const fmt = (iso) => {
+    try {
+      return new Date(iso).toLocaleDateString("en-US", {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
+      })
+    } catch { return iso }
+  }
+
+  const wc = (text) => text ? text.split(/\s+/).length.toLocaleString() : "—"
+
+  return (
+    <>
+      {open && <div className="drawer-overlay" onClick={onClose} />}
+      <aside className={`drawer ${open ? "drawer-open" : ""}`}>
+        <div className="drawer-head">
+          <span className="drawer-title">Report History</span>
+          <button className="drawer-close" onClick={onClose}>✕</button>
+        </div>
+        {loading && <div className="drawer-empty">Loading...</div>}
+        {!loading && items.length === 0 && (
+          <div className="drawer-empty">No reports yet. Run a research to get started.</div>
+        )}
+        {!loading && items.map(r => (
+          <button key={r.id} className="history-row" onClick={() => handleLoad(r.id)}>
+            <div className="history-topic">{r.topic}</div>
+            <div className="history-meta">
+              <span>{fmt(r.created_at)}</span>
+              <span>{wc(r.final_report)} words</span>
+            </div>
+          </button>
+        ))}
+      </aside>
+    </>
+  )
+}
+
 export default function App() {
-  const [query,   setQuery]   = useState("")
-  const [running, setRunning] = useState(false)
-  const [agents,  setAgents]  = useState({})
-  const [report,  setReport]  = useState(null)
-  const [error,   setError]   = useState(null)
-  const reportRef             = useRef(null)
-  const txRef                 = useRef(null)
+  const [query,       setQuery]       = useState("")
+  const [running,     setRunning]     = useState(false)
+  const [agents,      setAgents]      = useState({})
+  const [report,      setReport]      = useState(null)
+  const [error,       setError]       = useState(null)
+  const [showHistory, setShowHistory] = useState(false)
+  const reportRef = useRef(null)
+  const txRef     = useRef(null)
 
   const setAgent = useCallback((id, patch) =>
     setAgents(prev => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } })), [])
 
   const handleEvent = useCallback((event, data) => {
-    if (event === "agent_start") setAgent(data.agent, { status: "running", detail: data.message })
-    if (event === "agent_done")  setAgent(data.agent, { status: "done",    duration: data.duration, chars: data.chars })
-    if (event === "agent_error") setAgent(data.agent, { status: "error",   detail: data.message })
+    if (event === "agent_start")  setAgent(data.agent, { status: "running",  detail: data.message })
+    if (event === "agent_retry")  setAgent(data.agent, { status: "retrying", detail: data.message, retryCount: data.attempt })
+    if (event === "agent_done")   setAgent(data.agent, { status: "done",     duration: data.duration, chars: data.chars, stat: data.stat || null })
+    if (event === "agent_error")  setAgent(data.agent, { status: "error",    detail: data.message })
     if (event === "complete") {
       setReport(data)
       setRunning(false)
@@ -62,6 +151,12 @@ export default function App() {
     txRef.current?.focus()
   }
 
+  const loadHistoryReport = (r) => {
+    setReport({ report: r.final_report, query: r.topic, report_id: r.id })
+    setAgents({}); setError(null)
+    setTimeout(() => reportRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100)
+  }
+
   const pipelineVisible = running || Object.keys(agents).length > 0
 
   return (
@@ -75,10 +170,20 @@ export default function App() {
         <div className="nav-spacer" />
         <span className="nav-badge">Groq · LangGraph · LangSmith</span>
         {running && <span className="nav-badge live">● running</span>}
+        <button className="btn btn-ghost btn-sm" onClick={() => setShowHistory(h => !h)}>
+          History
+        </button>
         {report && !running && (
           <button className="btn btn-ghost btn-sm" onClick={reset}>New Research</button>
         )}
       </nav>
+
+      {/* History Drawer */}
+      <HistoryDrawer
+        open={showHistory}
+        onClose={() => setShowHistory(false)}
+        onLoad={loadHistoryReport}
+      />
 
       {/* Page */}
       <main className="page">
@@ -129,27 +234,9 @@ export default function App() {
           <div className="pipeline" style={{ marginTop: 32 }}>
             <div className="pipeline-label">Agent Pipeline</div>
             <div className="agents">
-              {AGENTS.map(a => {
-                const s = agents[a.id] || {}
-                const status = s.status || "idle"
-                return (
-                  <div key={a.id} className={`agent ${status !== "idle" ? status : ""}`}>
-                    <div className="agent-head">
-                      <span className="agent-name">{a.label}</span>
-                      <Dot status={status} />
-                    </div>
-                    <div className="agent-detail">
-                      {status === "running" ? s.detail
-                        : status === "done"  ? `${(s.chars || 0).toLocaleString()} chars`
-                        : status === "error" ? "failed"
-                        : a.detail}
-                    </div>
-                    {s.duration && (
-                      <div className="agent-time">{s.duration}s</div>
-                    )}
-                  </div>
-                )
-              })}
+              {AGENTS.map(a => (
+                <AgentCard key={a.id} a={a} s={agents[a.id]} />
+              ))}
             </div>
           </div>
         )}
