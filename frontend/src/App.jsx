@@ -73,7 +73,7 @@ export default function App() {
           Research Agent
         </div>
         <div className="nav-spacer" />
-        <span className="nav-badge">LangGraph · LangChain · LangSmith</span>
+        <span className="nav-badge">Groq · LangGraph · LangSmith</span>
         {running && <span className="nav-badge live">● running</span>}
         {report && !running && (
           <button className="btn btn-ghost btn-sm" onClick={reset}>New Research</button>
@@ -188,7 +188,7 @@ export default function App() {
         {/* Idle placeholder */}
         {!pipelineVisible && !report && !error && (
           <div className="idle" style={{ marginTop: 48 }}>
-            Powered by GPT-4o-mini · LangChain · LangGraph · LangSmith
+            Groq LLaMA 3.3 70B &nbsp;·&nbsp; LangChain &nbsp;·&nbsp; LangGraph &nbsp;·&nbsp; LangSmith
           </div>
         )}
       </main>
