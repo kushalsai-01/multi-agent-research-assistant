@@ -53,5 +53,3 @@ def run_reviewer(report: str, research_data: str, query: str) -> str:
         if result.strip().startswith(prefix):
             result = result.strip()[len(prefix):]
     return result.strip()
-
-    })
