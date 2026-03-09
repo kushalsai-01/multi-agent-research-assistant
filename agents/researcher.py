@@ -1,4 +1,4 @@
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import create_react_agent
 
@@ -26,10 +26,10 @@ Current date context: use the get_current_date tool if you need today's date.
 
 
 def build_researcher_agent():
-    llm = ChatOpenAI(
-        model=config.OPENAI_MODEL,
+    llm = ChatGroq(
+        model=config.GROQ_MODEL,
         temperature=config.LLM_TEMPERATURE,
-        api_key=config.OPENAI_API_KEY,
+        api_key=config.GROQ_API_KEY,
     )
 
     tools = [get_search_tool(), quick_search, get_current_date]

@@ -171,8 +171,8 @@ async def stream_pipeline(query: str):
 async def research(req: ResearchRequest):
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
-    if not config.OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not set on the server")
+    if not config.GROQ_API_KEY:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY is not set on the server")
 
     return StreamingResponse(
         stream_pipeline(req.query.strip()),
@@ -204,5 +204,5 @@ async def health():
         "status": "ok",
         "langsmith_tracing": config.LANGCHAIN_TRACING_V2 == "true",
         "supabase_configured": bool(config.SUPABASE_URL and config.SUPABASE_KEY),
-        "model": config.OPENAI_MODEL,
+        "model": config.GROQ_MODEL,
     }

@@ -1,4 +1,4 @@
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 import config
@@ -49,10 +49,10 @@ Write clearly and factually. Do NOT invent information beyond what's in the anal
 
 
 def build_writer_chain():
-    llm = ChatOpenAI(
-        model=config.OPENAI_MODEL,
-        temperature=0.4,  # slightly creative for good prose
-        api_key=config.OPENAI_API_KEY,
+    llm = ChatGroq(
+        model=config.GROQ_MODEL,
+        temperature=0.4,
+        api_key=config.GROQ_API_KEY,
     )
 
     prompt = ChatPromptTemplate.from_messages([

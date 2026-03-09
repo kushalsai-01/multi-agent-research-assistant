@@ -1,4 +1,4 @@
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 import config
@@ -55,10 +55,10 @@ Be thorough but fair in your assessment.
 
 
 def build_reviewer_chain():
-    llm = ChatOpenAI(
-        model=config.OPENAI_MODEL,
-        temperature=0.2,  # analytical
-        api_key=config.OPENAI_API_KEY,
+    llm = ChatGroq(
+        model=config.GROQ_MODEL,
+        temperature=0.2,
+        api_key=config.GROQ_API_KEY,
     )
 
     prompt = ChatPromptTemplate.from_messages([
