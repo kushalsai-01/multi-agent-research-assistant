@@ -44,12 +44,6 @@ def build_researcher_agent(model: str | None = None):
     return agent
 
 
-def run_researcher(topic: str) -> tuple:
-    """
-    Run the researcher agent.
-    Returns (research_text: str, citation_tracker: CitationTracker).
-    Automatically falls back to the smaller model if the primary is rate-limited.
-    """
 def _is_rate_limit(e: Exception) -> bool:
     s = str(e).lower()
     return "429" in s or "rate limit" in s or "ratelimit" in s or "too many requests" in s

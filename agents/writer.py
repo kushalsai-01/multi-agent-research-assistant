@@ -1,10 +1,8 @@
 from typing import AsyncGenerator
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from agents.schemas import WriterOutput
 from agents.llm_factory import get_primary_llm, get_fallback_llm, get_llm
-import config
 
 SYSTEM_PROMPT = """You are a Professional Technical Writer. You take
 structured analysis and produce polished, well-written reports.

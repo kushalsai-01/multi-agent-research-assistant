@@ -1,8 +1,6 @@
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from agents.schemas import ReviewerOutput
 from agents.llm_factory import get_primary_llm, get_fallback_llm
-import config
 
 SYSTEM_PROMPT = """You are a Senior Editor and Quality Reviewer.
 
