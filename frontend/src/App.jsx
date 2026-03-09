@@ -18,15 +18,7 @@ const DEBATE_AGENTS = [
   { id: "judge",     label: "Judge",      idle: "Synthesis"  },
 ]
 
-const AGENT_ICONS = {
-  researcher: "⚡",
-  analyst:    "◈",
-  writer:     "✦",
-  reviewer:   "◉",
-  optimist:   "◆",
-  skeptic:    "◐",
-  judge:      "⊜",
-}
+const AGENT_ICONS = {}
 
 const MODES = [
   { id: "standard", label: "Standard",  desc: "4-agent pipeline · researcher → analyst → writer → reviewer" },
@@ -80,7 +72,6 @@ function AgentCard({ a, s }) {
   return (
     <div className={`agent ${cardClass}`}>
       <div className="agent-head">
-        <span className="agent-icon">{AGENT_ICONS[a.id] || "◈"}</span>
         <span className="agent-name">{a.label}</span>
         <Dot status={dotStatus} />
       </div>
@@ -225,10 +216,10 @@ function RagBanner({ data }) {
 }
 
 const FEATURE_LIST = [
-  { icon: "⚡", title: "Sub-60s Reports",    desc: "Full report in under a minute" },
-  { icon: "🔍", title: "Live Web Search",    desc: "DuckDuckGo · cited sources" },
-  { icon: "🤖", title: "4 AI Agents",        desc: "Research → Analyse → Write → QA" },
-  { icon: "🌍", title: "15 Languages",       desc: "Native language output" },
+  { num: "01", title: "Sub-60s Reports",  desc: "Full report in under a minute"       },
+  { num: "02", title: "Live Web Search",  desc: "DuckDuckGo · cited sources"          },
+  { num: "03", title: "4 AI Agents",      desc: "Research → Analyse → Write → QA"   },
+  { num: "04", title: "15 Languages",     desc: "Native language output"              },
 ]
 
 function FeatureRow() {
@@ -236,11 +227,9 @@ function FeatureRow() {
     <div className="features">
       {FEATURE_LIST.map(f => (
         <div key={f.title} className="feature-card">
-          <span className="feature-icon">{f.icon}</span>
-          <div>
-            <div className="feature-title">{f.title}</div>
-            <div className="feature-desc">{f.desc}</div>
-          </div>
+          <div className="feature-num">{f.num}</div>
+          <div className="feature-title">{f.title}</div>
+          <div className="feature-desc">{f.desc}</div>
         </div>
       ))}
     </div>
