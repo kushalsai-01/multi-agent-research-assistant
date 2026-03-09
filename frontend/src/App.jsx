@@ -18,10 +18,12 @@ const DEBATE_AGENTS = [
   { id: "judge",     label: "Judge",      idle: "Synthesis"  },
 ]
 
+const AGENT_ICONS = {}
+
 const MODES = [
-  { id: "standard", label: "Standard",  desc: "4-agent pipeline with QA loop" },
-  { id: "debate",   label: "Debate",    desc: "Optimist vs Skeptic → Judge" },
-  { id: "hitl",     label: "HITL",      desc: "Human-in-the-loop review" },
+  { id: "standard", label: "Standard",  desc: "4-agent pipeline · researcher → analyst → writer → reviewer" },
+  { id: "debate",   label: "Debate",    desc: "Optimist vs Skeptic · Judge synthesises a final verdict" },
+  { id: "hitl",     label: "HITL",      desc: "You review raw research before the pipeline continues" },
 ]
 
 const EXAMPLES = [
@@ -145,19 +147,23 @@ function HistoryDrawer({ open, onClose, onLoad }) {
 }
 
 function ModeToggle({ mode, setMode, disabled }) {
+  const current = MODES.find(m => m.id === mode)
   return (
-    <div className="mode-toggle">
-      {MODES.map(m => (
-        <button
-          key={m.id}
-          className={`mode-btn ${mode === m.id ? "mode-active" : ""}`}
-          onClick={() => setMode(m.id)}
-          disabled={disabled}
-          title={m.desc}
-        >
-          {m.label}
-        </button>
-      ))}
+    <div className="mode-wrap">
+      <div className="mode-toggle">
+        {MODES.map(m => (
+          <button
+            key={m.id}
+            className={`mode-btn ${mode === m.id ? "mode-active" : ""}`}
+            onClick={() => setMode(m.id)}
+            disabled={disabled}
+            title={m.desc}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      {current && <div className="mode-desc">{current.desc}</div>}
     </div>
   )
 }
@@ -205,6 +211,27 @@ function RagBanner({ data }) {
     <div className="rag-banner">
       <span className="rag-icon">⚡</span>
       <span>Similar report found: "<strong>{data.topic}</strong>" — generating fresh analysis anyway.</span>
+    </div>
+  )
+}
+
+const FEATURE_LIST = [
+  { num: "01", title: "Sub-60s Reports",  desc: "Full report in under a minute"       },
+  { num: "02", title: "Live Web Search",  desc: "DuckDuckGo · cited sources"          },
+  { num: "03", title: "4 AI Agents",      desc: "Research → Analyse → Write → QA"   },
+  { num: "04", title: "15 Languages",     desc: "Native language output"              },
+]
+
+function FeatureRow() {
+  return (
+    <div className="features">
+      {FEATURE_LIST.map(f => (
+        <div key={f.title} className="feature-card">
+          <div className="feature-num">{f.num}</div>
+          <div className="feature-title">{f.title}</div>
+          <div className="feature-desc">{f.desc}</div>
+        </div>
+      ))}
     </div>
   )
 }
@@ -343,10 +370,10 @@ export default function App() {
 
   return (
     <div className="shell">
-      {/* Nav */}
+      {/* Nav — dot turns green while running */}
       <nav className="nav">
         <div className="nav-brand">
-          <span className="nav-dot" />
+          <span className={`nav-dot${running ? " nav-dot-live" : ""}`} />
           Research Agent
         </div>
         <div className="nav-spacer" />
@@ -372,6 +399,10 @@ export default function App() {
         {/* Hero — shown when idle */}
         {!pipelineVisible && !report && (
           <div className="hero">
+            <div className="hero-eyebrow">
+              <span className="hero-live-dot" />
+              Groq LLaMA 3.3 70B &nbsp;·&nbsp; LangGraph &nbsp;·&nbsp; LangSmith
+            </div>
             <h1>Research anything.<br /><span>In seconds.</span></h1>
             <p>AI agents search the web, extract insights, write and review a full report — automatically.</p>
           </div>
@@ -421,6 +452,9 @@ export default function App() {
             ))}
           </div>
         )}
+
+        {/* Feature row */}
+        {!pipelineVisible && !report && <FeatureRow />}
 
         {/* Past Searches Memory Panel */}
         {!pipelineVisible && !report && pastSearches.length > 0 && (
@@ -519,10 +553,16 @@ export default function App() {
           </div>
         )}
 
-        {/* Idle placeholder */}
+        {/* Idle footer */}
         {!pipelineVisible && !report && !error && (
           <div className="idle" style={{ marginTop: 48 }}>
-            Groq LLaMA 3.3 70B &nbsp;·&nbsp; LangChain &nbsp;·&nbsp; LangGraph &nbsp;·&nbsp; LangSmith
+            <span>Groq LLaMA 3.3 70B</span>
+            <span className="idle-sep">·</span>
+            <span>LangChain</span>
+            <span className="idle-sep">·</span>
+            <span>LangGraph</span>
+            <span className="idle-sep">·</span>
+            <span>LangSmith</span>
           </div>
         )}
       </main>
