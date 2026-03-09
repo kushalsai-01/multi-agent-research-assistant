@@ -315,7 +315,7 @@ export default function App() {
     setResuming(true); setHitlPaused(false)
     try {
       await streamResume(hitlSessionId, feedback, handleEvent)
-    } catch (e) { setError(e.message); setResuming(false) }
+    } catch (e) { setError(e.message); setResuming(false); setRunning(false) }
   }
 
   const reset = () => {

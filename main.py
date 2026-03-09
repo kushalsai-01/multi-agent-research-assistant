@@ -7,7 +7,7 @@ from pathlib import Path
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import OPENAI_API_KEY
+import config
 from orchestrator import run_pipeline
 
 
@@ -24,13 +24,13 @@ def print_banner():
 
 def main():
     print_banner()
-    
+
     # Check API key
-    if not OPENAI_API_KEY or OPENAI_API_KEY.startswith("sk-your"):
-        print("❌ ERROR: OpenAI API key not set!")
+    if not config.GROQ_API_KEY or config.GROQ_API_KEY.startswith("gsk_your"):
+        print("❌ ERROR: GROQ_API_KEY not set!")
         print("   → Copy .env.example to .env and add your key")
-        print("   → Or set OPENAI_API_KEY environment variable")
-        print("   → Get a key at: https://platform.openai.com/api-keys")
+        print("   → Or set GROQ_API_KEY environment variable")
+        print("   → Get a free key at: https://console.groq.com")
         sys.exit(1)
     
     # Get topic
