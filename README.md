@@ -26,12 +26,6 @@
 
 ![LangGraph State Machine](docs/langgraph-state-machine.png)
 
----
-
-### Diagram 3 — Deployment Infrastructure
-> *(Full diagram in `/docs/deployment.excalidraw`)*
-
-![Deployment Infrastructure](docs/deployment.png)
 
 ---
 
