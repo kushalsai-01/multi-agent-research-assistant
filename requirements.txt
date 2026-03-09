@@ -21,8 +21,7 @@ duckduckgo-search>=6.0.0
 python-dotenv>=1.0.0
 tiktoken>=0.7.0
 
-# v2: RAG embeddings (CPU, ~22MB model)
-sentence-transformers>=2.7.0
+# v2: RAG uses Supabase text search (no local model — saves ~500MB RAM on free tier)
 
 # v2: MCP server
 fastmcp>=0.4.0
