@@ -4,6 +4,7 @@ from langgraph.prebuilt import create_react_agent
 
 from tools.web_search import get_search_tool, quick_search
 from tools.text_tools import get_current_date
+from tools.citation_tracker import CitationTracker
 import config
 
 SYSTEM_PROMPT = """You are a Senior Research Specialist. Your job is to 
@@ -42,13 +43,20 @@ def build_researcher_agent():
     return agent
 
 
-def run_researcher(topic: str) -> str:
+def run_researcher(topic: str) -> tuple:
+    """
+    Run the researcher agent.
+    Returns (research_text: str, citation_tracker: CitationTracker).
+    """
     agent = build_researcher_agent()
-    result = agent.invoke({
-        "messages": [HumanMessage(content=f"Research the following topic thoroughly:\n\n{topic}")]
-    })
+    tracker = CitationTracker()
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content=f"Research the following topic thoroughly:\n\n{topic}")]},
+        config={"callbacks": [tracker]},
+    )
+
     # Extract the final AI message content
     messages = result.get("messages", [])
-    if messages:
-        return messages[-1].content
-    return "No research data collected."
+    text = messages[-1].content if messages else "No research data collected."
+    return text, tracker
