@@ -22,5 +22,7 @@ services:
         sync: false
       - key: LANGCHAIN_PROJECT
         value: ai-research-assistant
+      - key: GROQ_FALLBACK_MODEL
+        value: "llama-3.1-8b-instant"
       - key: PYTHON_VERSION
         value: "3.11.9"
