@@ -2,6 +2,8 @@
 Supabase database integration.
 Set SUPABASE_URL and SUPABASE_KEY in your .env to enable persistence.
 If not configured, the app still works — reports just won't be stored.
+
+v2: Added embedding support for RAG (pgvector).
 """
 
 import os
@@ -31,19 +33,36 @@ def _get_client():
     return _client
 
 
-def save_report(topic: str, final_report: str, raw_research: str = "", analysis: str = "") -> Optional[str]:
+def save_report(
+    topic: str,
+    final_report: str,
+    raw_research: str = "",
+    analysis: str = "",
+    quality_score: int = 0,
+    revision_count: int = 0,
+    mode: str = "standard",
+) -> Optional[str]:
     """Save a completed report to Supabase. Returns the row ID or None."""
     client = _get_client()
     if not client:
         return None
     try:
-        result = client.table("reports").insert({
+        row = {
             "topic": topic,
             "final_report": final_report,
             "raw_research": raw_research,
             "analysis": analysis,
             "created_at": datetime.now(timezone.utc).isoformat(),
-        }).execute()
+        }
+        # Only include v2 columns if they have values (backward compatible)
+        if quality_score:
+            row["quality_score"] = quality_score
+        if revision_count:
+            row["revision_count"] = revision_count
+        if mode != "standard":
+            row["mode"] = mode
+
+        result = client.table("reports").insert(row).execute()
         if result.data:
             return result.data[0]["id"]
     except Exception as e:

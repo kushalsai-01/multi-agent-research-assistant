@@ -1,13 +1,27 @@
 ﻿import { useState, useCallback, useRef, useEffect } from "react"
-import { streamResearch, fetchHistory, fetchReport } from "./api"
+import { streamResearch, streamDebate, streamHitl, streamResume, fetchHistory, fetchReport } from "./api"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
-const AGENTS = [
+const STANDARD_AGENTS = [
   { id: "researcher", label: "Researcher", idle: "Web search" },
   { id: "analyst",   label: "Analyst",    idle: "Insights"  },
   { id: "writer",    label: "Writer",     idle: "Report"    },
   { id: "reviewer",  label: "Reviewer",   idle: "QA"        },
+]
+
+const DEBATE_AGENTS = [
+  { id: "researcher", label: "Researcher", idle: "Web search" },
+  { id: "analyst",   label: "Analyst",    idle: "Insights"  },
+  { id: "optimist",  label: "Optimist",   idle: "Positive"  },
+  { id: "skeptic",   label: "Skeptic",    idle: "Critical"  },
+  { id: "judge",     label: "Judge",      idle: "Synthesis"  },
+]
+
+const MODES = [
+  { id: "standard", label: "Standard",  desc: "4-agent pipeline with QA loop" },
+  { id: "debate",   label: "Debate",    desc: "Optimist vs Skeptic → Judge" },
+  { id: "hitl",     label: "HITL",      desc: "Human-in-the-loop review" },
 ]
 
 const EXAMPLES = [
@@ -113,13 +127,112 @@ function HistoryDrawer({ open, onClose, onLoad }) {
   )
 }
 
+function ModeToggle({ mode, setMode, disabled }) {
+  return (
+    <div className="mode-toggle">
+      {MODES.map(m => (
+        <button
+          key={m.id}
+          className={`mode-btn ${mode === m.id ? "mode-active" : ""}`}
+          onClick={() => setMode(m.id)}
+          disabled={disabled}
+          title={m.desc}
+        >
+          {m.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function HITLPanel({ sessionId, preview, onResume, resuming }) {
+  const [feedback, setFeedback] = useState("")
+
+  return (
+    <div className="hitl-panel">
+      <div className="hitl-head">
+        <span className="hitl-badge">HUMAN REVIEW</span>
+        <span className="hitl-session">Session: {sessionId}</span>
+      </div>
+      <div className="hitl-body">
+        <p className="hitl-msg">Research is complete. Review the findings above, optionally add feedback, then click Resume.</p>
+        {preview && (
+          <details className="hitl-preview">
+            <summary>Research preview</summary>
+            <pre>{preview}</pre>
+          </details>
+        )}
+        <textarea
+          className="hitl-feedback"
+          placeholder="Optional: Add feedback or additional instructions for the analyst..."
+          value={feedback}
+          onChange={e => setFeedback(e.target.value)}
+          rows={3}
+          disabled={resuming}
+        />
+        <button
+          className="btn btn-run hitl-resume-btn"
+          onClick={() => onResume(feedback)}
+          disabled={resuming}
+        >
+          {resuming ? "Resuming..." : "Resume Pipeline →"}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function RagBanner({ data }) {
+  if (!data) return null
+  return (
+    <div className="rag-banner">
+      <span className="rag-icon">⚡</span>
+      <span>Similar report found: "<strong>{data.topic}</strong>" — generating fresh analysis anyway.</span>
+    </div>
+  )
+}
+
+function DebateCards({ optimist, skeptic }) {
+  if (!optimist && !skeptic) return null
+  return (
+    <div className="debate-cards">
+      {optimist && (
+        <div className="debate-card debate-optimist">
+          <div className="debate-card-head">Optimist Perspective</div>
+          <div className="md debate-card-body">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{optimist}</ReactMarkdown>
+          </div>
+        </div>
+      )}
+      {skeptic && (
+        <div className="debate-card debate-skeptic">
+          <div className="debate-card-head">Skeptic Analysis</div>
+          <div className="md debate-card-body">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{skeptic}</ReactMarkdown>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function App() {
   const [query,       setQuery]       = useState("")
+  const [mode,        setMode]        = useState("standard")
   const [running,     setRunning]     = useState(false)
   const [agents,      setAgents]      = useState({})
   const [report,      setReport]      = useState(null)
   const [error,       setError]       = useState(null)
   const [showHistory, setShowHistory] = useState(false)
+  const [ragHit,      setRagHit]      = useState(null)
+  const [debateData,  setDebateData]  = useState({ optimist: null, skeptic: null })
+
+  // HITL state
+  const [hitlPaused,    setHitlPaused]    = useState(false)
+  const [hitlSessionId, setHitlSessionId] = useState(null)
+  const [hitlPreview,   setHitlPreview]   = useState("")
+  const [resuming,      setResuming]      = useState(false)
+
   const reportRef = useRef(null)
   const txRef     = useRef(null)
 
@@ -127,37 +240,71 @@ export default function App() {
     setAgents(prev => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } })), [])
 
   const handleEvent = useCallback((event, data) => {
-    if (event === "agent_start")  setAgent(data.agent, { status: "running",  detail: data.message })
-    if (event === "agent_retry")  setAgent(data.agent, { status: "retrying", detail: data.message, retryCount: data.attempt })
-    if (event === "agent_done")   setAgent(data.agent, { status: "done",     duration: data.duration, chars: data.chars, stat: data.stat || null })
-    if (event === "agent_error")  setAgent(data.agent, { status: "error",    detail: data.message })
+    if (event === "agent_start")   setAgent(data.agent, { status: "running",  detail: data.message })
+    if (event === "agent_retry")   setAgent(data.agent, { status: "retrying", detail: data.message, retryCount: data.attempt })
+    if (event === "agent_done")    setAgent(data.agent, { status: "done",     duration: data.duration, chars: data.chars, stat: data.stat || null })
+    if (event === "agent_error")   setAgent(data.agent, { status: "error",    detail: data.message })
+    if (event === "rag_hit")       setRagHit(data)
+    if (event === "revision_start") {
+      // Flash the writer back to running state for revisions
+      setAgent("writer", { status: "idle", detail: `Revision ${data.revision} starting...` })
+      setAgent("reviewer", { status: "idle" })
+    }
+    if (event === "hitl_pause") {
+      setHitlPaused(true)
+      setHitlSessionId(data.session_id)
+      setHitlPreview(data.research_preview || "")
+    }
     if (event === "complete") {
       setReport(data)
+      if (data.optimist_report) setDebateData({ optimist: data.optimist_report, skeptic: data.skeptic_report })
       setRunning(false)
+      setResuming(false)
+      setHitlPaused(false)
       setTimeout(() => reportRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100)
     }
-    if (event === "pipeline_error") { setError(data.message); setRunning(false) }
+    if (event === "pipeline_error") { setError(data.message); setRunning(false); setResuming(false) }
   }, [setAgent])
 
   const run = async () => {
     if (!query.trim() || running) return
-    setRunning(true); setReport(null); setError(null); setAgents({})
-    try { await streamResearch(query.trim(), handleEvent) }
-    catch (e) { setError(e.message); setRunning(false) }
+    setRunning(true); setReport(null); setError(null); setAgents({}); setRagHit(null)
+    setDebateData({ optimist: null, skeptic: null }); setHitlPaused(false); setHitlSessionId(null)
+
+    try {
+      if (mode === "debate") {
+        await streamDebate(query.trim(), handleEvent)
+      } else if (mode === "hitl") {
+        await streamHitl(query.trim(), handleEvent)
+      } else {
+        await streamResearch(query.trim(), handleEvent)
+      }
+    } catch (e) { setError(e.message); setRunning(false) }
+  }
+
+  const handleResume = async (feedback) => {
+    if (!hitlSessionId) return
+    setResuming(true); setHitlPaused(false)
+    try {
+      await streamResume(hitlSessionId, feedback, handleEvent)
+    } catch (e) { setError(e.message); setResuming(false) }
   }
 
   const reset = () => {
     setQuery(""); setReport(null); setError(null); setAgents({}); setRunning(false)
+    setRagHit(null); setDebateData({ optimist: null, skeptic: null })
+    setHitlPaused(false); setHitlSessionId(null); setResuming(false)
     txRef.current?.focus()
   }
 
   const loadHistoryReport = (r) => {
     setReport({ report: r.final_report, query: r.topic, report_id: r.id })
-    setAgents({}); setError(null)
+    setAgents({}); setError(null); setRagHit(null); setDebateData({ optimist: null, skeptic: null })
     setTimeout(() => reportRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100)
   }
 
-  const pipelineVisible = running || Object.keys(agents).length > 0
+  const pipelineVisible = running || resuming || Object.keys(agents).length > 0
+  const currentAgents = mode === "debate" ? DEBATE_AGENTS : STANDARD_AGENTS
 
   return (
     <div className="shell">
@@ -191,8 +338,13 @@ export default function App() {
         {!pipelineVisible && !report && (
           <div className="hero">
             <h1>Research anything.<br /><span>In seconds.</span></h1>
-            <p>4 AI agents search the web, extract insights, write and review a full report — automatically.</p>
+            <p>AI agents search the web, extract insights, write and review a full report — automatically.</p>
           </div>
+        )}
+
+        {/* Mode Toggle */}
+        {!pipelineVisible && !report && (
+          <ModeToggle mode={mode} setMode={setMode} disabled={running} />
         )}
 
         {/* Input */}
@@ -208,9 +360,9 @@ export default function App() {
             disabled={running}
           />
           <div className="input-bar">
-            <span className="input-hint">⌘ Enter to run</span>
+            <span className="input-hint">⌘ Enter to run · {mode} mode</span>
             <button className="btn btn-run" onClick={run} disabled={running || !query.trim()}>
-              {running ? "Researching..." : "Run →"}
+              {running ? "Researching..." : `Run ${mode === "debate" ? "Debate" : mode === "hitl" ? "HITL" : ""} →`}
             </button>
           </div>
         </div>
@@ -226,26 +378,50 @@ export default function App() {
           </div>
         )}
 
+        {/* RAG Banner */}
+        <RagBanner data={ragHit} />
+
         {/* Error */}
         {error && <div className="err" style={{ marginTop: 20 }}>⚠ {error}</div>}
 
         {/* Pipeline */}
         {pipelineVisible && (
           <div className="pipeline" style={{ marginTop: 32 }}>
-            <div className="pipeline-label">Agent Pipeline</div>
-            <div className="agents">
-              {AGENTS.map(a => (
+            <div className="pipeline-label">
+              Agent Pipeline {mode !== "standard" && <span className="pipeline-mode">· {mode.toUpperCase()}</span>}
+            </div>
+            <div className={`agents ${currentAgents.length === 5 ? "agents-5" : ""}`}>
+              {currentAgents.map(a => (
                 <AgentCard key={a.id} a={a} s={agents[a.id]} />
               ))}
             </div>
           </div>
         )}
 
+        {/* HITL Panel */}
+        {hitlPaused && (
+          <HITLPanel
+            sessionId={hitlSessionId}
+            preview={hitlPreview}
+            onResume={handleResume}
+            resuming={resuming}
+          />
+        )}
+
+        {/* Debate Side-by-Side Cards */}
+        {report && mode === "debate" && (
+          <DebateCards optimist={debateData.optimist} skeptic={debateData.skeptic} />
+        )}
+
         {/* Report */}
         {report?.report && (
           <div className="report-wrap" ref={reportRef} style={{ marginTop: pipelineVisible ? 24 : 32 }}>
             <div className="report-top">
-              <span className="report-top-label">Final Report</span>
+              <span className="report-top-label">
+                Final Report
+                {report.quality_score ? ` · Score ${report.quality_score}/10` : ""}
+                {report.revisions > 1 ? ` · ${report.revisions} revisions` : ""}
+              </span>
               <button
                 className="btn btn-ghost btn-sm"
                 onClick={() => navigator.clipboard.writeText(report.report)}
