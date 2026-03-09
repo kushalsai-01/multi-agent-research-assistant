@@ -1,6 +1,6 @@
-# 🔬 AI Multi-Agent Research Assistant
+﻿# AI Multi-Agent Research Assistant
 
-> A **LangGraph + LangChain** powered system where 4 specialized AI agents autonomously collaborate to research any topic, extract insights, write a polished report, and self-review for quality — with a conditional revision loop.
+A multi-agent research system built with LangGraph and LangChain. You give it a topic, and 4 specialized agents — Researcher, Analyst, Writer, and Reviewer — work through a stateful pipeline to produce a polished, self-reviewed report. If the Reviewer scores the draft below 7/10, it automatically loops back to the Writer for revision (up to 2 rounds).
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)
 ![LangChain](https://img.shields.io/badge/LangChain-0.3-green)
@@ -12,40 +12,42 @@
 
 ---
 
-## 📐 Architecture Diagrams
+## Architecture
 
-### Diagram 1 — System Architecture
+### System Overview
+
 ![System Architecture](docs/system-architecture.png)
 
 ---
 
-### Diagram 2 — LangGraph Agent State Machine
+### LangGraph Agent State Machine
 
 ![LangGraph State Machine](docs/langgraph-state-machine.png)
 
-
 ---
 
-## 🤖 How It Works
+## How It Works
 
-A user submits a research topic. LangGraph runs a **stateful 4-node pipeline** where each agent reads from and writes to a shared `ResearchState`. The Reviewer scores the final report — if quality is below 7/10, it loops back to the Writer with feedback for revision (max 2 rounds).
+The pipeline is a 4-node LangGraph state machine. All agents share a single `ResearchState` object — each one reads the previous agent's output and writes its own back into state.
 
 ```
 User Query → Researcher → Analyst → Writer → Reviewer → Final Report
                                         ↑         |
-                                        └── if score < 7 (max 2x)
+                                        └── score < 7 (max 2 retries)
 ```
+
+The Reviewer returns a structured JSON score. If quality is good enough, the report is finalized. If not, the feedback goes back to the Writer automatically.
 
 ---
 
-## 🧠 The 4 Agents
+## The 4 Agents
 
-| # | Agent | Implementation | Role |
-|---|-------|---------------|------|
-| 1 | 🔍 **Researcher** | LangChain ReAct Agent + DuckDuckGo Tool | Runs 4–6 web searches, compiles raw research |
-| 2 | 📊 **Analyst** | LCEL Chain (`prompt \| llm \| parser`) | Extracts key insights, patterns, confidence scores |
-| 3 | ✍️ **Writer** | LCEL Chain (`prompt \| llm \| parser`) | Writes structured 1000+ word Markdown report |
-| 4 | 🔎 **Reviewer** | LCEL Chain + `JsonOutputParser` | Scores 1–10, returns structured feedback, routes decision |
+| Agent | How it's built | What it does |
+|-------|---------------|--------------|
+| **Researcher** | LangChain ReAct Agent + DuckDuckGo Tool | Runs 4–6 web searches, compiles raw findings |
+| **Analyst** | LCEL Chain (`prompt \| llm \| parser`) | Pulls out key insights, patterns, and confidence scores |
+| **Writer** | LCEL Chain (`prompt \| llm \| parser`) | Writes a structured 1000+ word Markdown report |
+| **Reviewer** | LCEL Chain + `JsonOutputParser` | Scores 1–10, returns feedback, decides whether to approve or revise |
 
 ### LangGraph Pipeline
 
@@ -62,83 +64,81 @@ graph.add_edge("researcher", "analyst")
 graph.add_edge("analyst",    "writer")
 graph.add_edge("writer",     "reviewer")
 
-# Conditional edge — self-correcting loop
 graph.add_conditional_edges(
     "reviewer",
-    should_revise,          # returns "end" or "revise"
+    should_revise,
     {"end": END, "revise": "writer"}
 )
 ```
 
-### Shared State (the "baton" between agents)
+### Shared State
 
 ```python
 class ResearchState(TypedDict):
-    topic:        str           # User's query
-    raw_research: str           # Researcher output
-    analysis:     str           # Analyst output
-    report:       str           # Writer output
-    review:       dict          # Reviewer score + feedback
-    final_report: str           # Approved report
-    iteration:    int           # Revision count (max 2)
+    topic:        str     # the user's query
+    raw_research: str     # researcher output
+    analysis:     str     # analyst output
+    report:       str     # writer output
+    review:       dict    # reviewer score + feedback
+    final_report: str     # approved report
+    iteration:    int     # revision count (capped at 2)
 ```
 
 ---
 
-## 🏗️ Tech Stack
+## Stack
 
-| Layer | Technology | Why |
-|-------|-----------|-----|
-| **LLM** | Groq — LLaMA 3.3 70B | Free tier, 10× faster than OpenAI |
-| **Agent Framework** | LangChain 0.3 | Industry standard, LCEL chains |
-| **Orchestration** | LangGraph 0.2 | Stateful graph, conditional routing |
-| **Web Search** | DuckDuckGo | Free, no API key needed |
-| **Backend** | FastAPI + SSE streaming | Live agent progress to frontend |
-| **Frontend** | React + Vite | Fast, clean UI |
-| **Database** | Supabase (Postgres) | Stores all reports + agent logs |
-| **Backend Deploy** | Render | Free tier, easy GitHub deploy |
-| **Frontend Deploy** | Vercel | Free, global CDN |
+| Layer | Tech | Reason |
+|-------|------|--------|
+| LLM | Groq — LLaMA 3.3 70B | Free tier, much faster than OpenAI |
+| Agent Framework | LangChain 0.3 | LCEL chains, solid tooling |
+| Orchestration | LangGraph 0.2 | Stateful graph with conditional routing |
+| Web Search | DuckDuckGo | Free, no API key needed |
+| Backend | FastAPI + SSE | Streams live agent progress to the frontend |
+| Frontend | React + Vite | Clean UI, fast builds |
+| Database | Supabase (Postgres) | Stores all reports and agent logs |
+| Backend Deploy | Render | Free tier, connects straight to GitHub |
+| Frontend Deploy | Vercel | Free, global CDN |
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 ai-research-assistant/
-├── main.py                  # FastAPI app + SSE streaming endpoint
-├── orchestrator.py          # LangGraph StateGraph pipeline
-├── config.py                # Groq LLM setup, env loading
+├── main.py              # FastAPI app + SSE streaming endpoint
+├── orchestrator.py      # LangGraph StateGraph pipeline
+├── config.py            # LLM setup, env loading
 ├── requirements.txt
 ├── .env.example
 │
 ├── agents/
-│   ├── researcher.py        # ReAct Agent + DuckDuckGo tool
-│   ├── analyst.py           # LCEL chain
-│   ├── writer.py            # LCEL chain
-│   └── reviewer.py          # LCEL chain + JsonOutputParser
+│   ├── researcher.py    # ReAct Agent + DuckDuckGo
+│   ├── analyst.py       # LCEL chain
+│   ├── writer.py        # LCEL chain
+│   └── reviewer.py      # LCEL chain + JsonOutputParser
 │
 ├── tools/
-│   ├── web_search.py        # DuckDuckGo wrapper
-│   └── text_tools.py        # Text utilities
+│   ├── web_search.py    # DuckDuckGo wrapper
+│   └── text_tools.py    # Text utilities
 │
-├── frontend/                # React + Vite app (deployed to Vercel)
+├── frontend/            # React + Vite (deployed to Vercel)
 │   ├── src/
 │   │   └── App.jsx
 │   └── package.json
 │
-├── docs/                    # Architecture diagrams (Excalidraw)
-│   ├── system-architecture.excalidraw
-│   ├── langgraph-state-machine.excalidraw
-│   └── deployment.excalidraw
+├── docs/
+│   ├── system-architecture.png
+│   └── langgraph-state-machine.png
 │
-└── output/                  # Generated reports (local runs)
+└── output/              # Generated reports (local runs)
 ```
 
 ---
 
-## 🚀 Quick Start (Local)
+## Running Locally
 
-### 1. Clone & Install
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/your-username/ai-research-assistant
@@ -146,7 +146,7 @@ cd ai-research-assistant
 pip install -r requirements.txt
 ```
 
-### 2. Environment Variables
+### 2. Set up environment variables
 
 ```bash
 cp .env.example .env
@@ -158,43 +158,42 @@ SUPABASE_URL=https://xxxx.supabase.co
 SUPABASE_KEY=your-anon-key
 ```
 
-Get your free Groq key at [console.groq.com](https://console.groq.com)
+Get a free Groq key at [console.groq.com](https://console.groq.com).
 
-### 3. Run Backend
+### 3. Start the backend
 
 ```bash
 uvicorn main:app --reload
-# API running at http://localhost:8000
+# http://localhost:8000
 ```
 
-### 4. Run Frontend
+### 4. Start the frontend
 
 ```bash
 cd frontend
 npm install
 npm run dev
-# UI running at http://localhost:5173
+# http://localhost:5173
 ```
 
 ---
 
-## ☁️ Deployment
+## Deployment
 
-### Backend → Render (Free)
+### Backend → Render
 
 1. Push to GitHub
-2. [render.com](https://render.com) → New Web Service → Connect repo
-3. Set environment variables: `GROQ_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`
+2. Render → New Web Service → connect the repo
+3. Add env vars: `GROQ_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`
 4. Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-5. Deploy ✅
 
-### Frontend → Vercel (Free)
+### Frontend → Vercel
 
-1. [vercel.com](https://vercel.com) → Import GitHub repo (`/frontend` folder)
-2. Add env variable: `VITE_API_URL=https://your-app.onrender.com`
-3. Deploy ✅
+1. Vercel → Import GitHub repo, point it to the `/frontend` folder
+2. Add `VITE_API_URL=https://your-app.onrender.com`
+3. Deploy
 
-### Database → Supabase (Free)
+### Database → Supabase
 
 ```sql
 CREATE TABLE reports (
@@ -219,42 +218,44 @@ CREATE TABLE agent_logs (
 
 ---
 
-## 💰 Cost
+## Cost
+
+Everything runs on free tiers.
 
 | Service | Cost |
 |---------|------|
 | Groq API | Free (14,400 req/day) |
-| Render | Free tier |
-| Vercel | Free tier |
+| Render | Free |
+| Vercel | Free |
 | Supabase | Free (500MB) |
 | **Total** | **$0/month** |
 
 ---
 
-## 🧪 Example Output
+## Example Run
 
 ```
-📝 Query: "Impact of AI on healthcare in 2025"
+Query: "Impact of AI on healthcare in 2025"
 
-🔍 Researcher  — Searched 6 queries, compiled 800 words of raw research
-📊 Analyst     — Extracted 5 key findings with confidence scores
-✍️ Writer      — Composed 1,200-word structured Markdown report
-🔎 Reviewer    — Score: 8.4/10 — Approved ✅
+Researcher  — 6 searches, ~800 words of raw research
+Analyst     — 5 key findings with confidence scores
+Writer      — 1,200-word structured Markdown report
+Reviewer    — Score: 8.4/10 — Approved
 
-📄 Report saved → Supabase + available to download
+Report saved to Supabase, available to download
 ```
 
 ---
 
-## 📝 License
+## License
 
-MIT — free for personal and commercial use.
+MIT — use it however you want.
 
 ---
 
-## 🙏 Acknowledgments
+## Credits
 
-- [LangChain](https://github.com/langchain-ai/langchain) — LLM agent framework
-- [LangGraph](https://github.com/langchain-ai/langgraph) — Multi-agent orchestration
-- [Groq](https://groq.com) — Ultra-fast LLM inference
-- [Supabase](https://supabase.com) — Open source Firebase alternative
+- [LangChain](https://github.com/langchain-ai/langchain)
+- [LangGraph](https://github.com/langchain-ai/langgraph)
+- [Groq](https://groq.com)
+- [Supabase](https://supabase.com)
