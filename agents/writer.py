@@ -1,5 +1,7 @@
+from typing import AsyncGenerator
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 from agents.schemas import WriterOutput
 import config
 
@@ -29,7 +31,9 @@ Address these specific revision instructions FIRST, then produce your improved r
 """
 
 
-def build_writer_chain():
+def build_writer_chain(language: str = "English"):
+    lang_note = _lang_suffix(language)
+    system = SYSTEM_PROMPT + lang_note
     llm = ChatGroq(
         model=config.GROQ_MODEL,
         temperature=0.4,
@@ -38,7 +42,7 @@ def build_writer_chain():
     structured_llm = llm.with_structured_output(WriterOutput)
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
+        ("system", system),
         ("human", "{revision_block}Original topic: {query}\n\n"
                   "Structured analysis:\n{analysis}\n\n"
                   "Write the full report now."),
@@ -47,9 +51,16 @@ def build_writer_chain():
     return prompt | structured_llm
 
 
-def run_writer(analysis: str, query: str, revision_instructions: str = "") -> WriterOutput:
+def _lang_suffix(language: str) -> str:
+    """Return a language instruction suffix for non-English outputs."""
+    if not language or language.lower() in ("english", "en"):
+        return ""
+    return f"\n\nIMPORTANT: Write the ENTIRE report in {language}. All headings, content, summaries, and takeaways must be in {language}."
+
+
+def run_writer(analysis: str, query: str, revision_instructions: str = "", language: str = "English") -> WriterOutput:
     """Run the writer chain and return structured WriterOutput."""
-    chain = build_writer_chain()
+    chain = build_writer_chain(language)
     revision_block = ""
     if revision_instructions:
         revision_block = REVISION_PREFIX.format(revision_instructions=revision_instructions)
@@ -58,6 +69,46 @@ def run_writer(analysis: str, query: str, revision_instructions: str = "") -> Wr
         "query": query,
         "revision_block": revision_block,
     })
+
+
+async def astream_writer(
+    analysis: str,
+    query: str,
+    revision_instructions: str = "",
+    language: str = "English",
+) -> AsyncGenerator[str, None]:
+    """
+    Async generator that streams writer output token-by-token.
+    Yields raw Markdown chunks — accumulate them for the full report.
+    Uses a plain StrOutputParser chain (not structured output) to enable streaming.
+    """
+    lang_note = _lang_suffix(language)
+    stream_system = SYSTEM_PROMPT + lang_note + "\n\nWrite in plain Markdown. Start directly with # Title."
+
+    llm = ChatGroq(
+        model=config.GROQ_MODEL,
+        temperature=0.4,
+        api_key=config.GROQ_API_KEY,
+        streaming=True,
+    )
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", stream_system),
+        ("human", "{revision_block}Original topic: {query}\n\n"
+                  "Structured analysis:\n{analysis}\n\n"
+                  "Write the full Markdown report now."),
+    ])
+    chain = prompt | llm | StrOutputParser()
+
+    revision_block = ""
+    if revision_instructions:
+        revision_block = REVISION_PREFIX.format(revision_instructions=revision_instructions)
+
+    async for chunk in chain.astream({
+        "analysis": analysis,
+        "query": query,
+        "revision_block": revision_block,
+    }):
+        yield chunk
 
 
 def writer_to_markdown(output: WriterOutput) -> str:

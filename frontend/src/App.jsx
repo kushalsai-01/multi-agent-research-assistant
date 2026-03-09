@@ -1,5 +1,5 @@
 ﻿import { useState, useCallback, useRef, useEffect } from "react"
-import { streamResearch, streamDebate, streamHitl, streamResume, fetchHistory, fetchReport } from "./api"
+import { streamResearch, streamDebate, streamHitl, streamResume, fetchHistory, fetchReport, fetchMemory } from "./api"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
@@ -31,6 +31,23 @@ const EXAMPLES = [
   "Cybersecurity threats and trends 2025",
   "Impact of AI on global job markets",
 ]
+
+const LANGUAGES = [
+  "English", "Spanish", "French", "German", "Chinese",
+  "Japanese", "Hindi", "Arabic", "Portuguese", "Italian",
+  "Korean", "Dutch", "Russian", "Swedish", "Turkish",
+]
+
+function getOrCreateSessionId() {
+  let id = localStorage.getItem("rsid")
+  if (!id) {
+    id = typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2) + Date.now().toString(36)
+    localStorage.setItem("rsid", id)
+  }
+  return id
+}
 
 function Dot({ status }) {
   let cls = "dot"
@@ -226,6 +243,10 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false)
   const [ragHit,      setRagHit]      = useState(null)
   const [debateData,  setDebateData]  = useState({ optimist: null, skeptic: null })
+  const [language,    setLanguage]    = useState("English")
+  const [sessionId]                   = useState(getOrCreateSessionId)
+  const [streamingText, setStreamingText] = useState("")
+  const [pastSearches,  setPastSearches] = useState([])
 
   // HITL state
   const [hitlPaused,    setHitlPaused]    = useState(false)
@@ -240,11 +261,13 @@ export default function App() {
     setAgents(prev => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } })), [])
 
   const handleEvent = useCallback((event, data) => {
+    if (event === "start")         setStreamingText("")
     if (event === "agent_start")   setAgent(data.agent, { status: "running",  detail: data.message })
     if (event === "agent_retry")   setAgent(data.agent, { status: "retrying", detail: data.message, retryCount: data.attempt })
     if (event === "agent_done")    setAgent(data.agent, { status: "done",     duration: data.duration, chars: data.chars, stat: data.stat || null })
     if (event === "agent_error")   setAgent(data.agent, { status: "error",    detail: data.message })
     if (event === "rag_hit")       setRagHit(data)
+    if (event === "writer_token")  setStreamingText(t => t + data.token)
     if (event === "revision_start") {
       // Flash the writer back to running state for revisions
       setAgent("writer", { status: "idle", detail: `Revision ${data.revision} starting...` })
@@ -257,27 +280,32 @@ export default function App() {
     }
     if (event === "complete") {
       setReport(data)
+      setStreamingText("")
       if (data.optimist_report) setDebateData({ optimist: data.optimist_report, skeptic: data.skeptic_report })
       setRunning(false)
       setResuming(false)
       setHitlPaused(false)
+      // Refresh past searches after completion
+      fetchMemory(sessionId).then(h => setPastSearches(h)).catch(() => {})
       setTimeout(() => reportRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100)
     }
-    if (event === "pipeline_error") { setError(data.message); setRunning(false); setResuming(false) }
+    if (event === "pipeline_error") { setError(data.message); setRunning(false); setResuming(false); setStreamingText("") }
   }, [setAgent])
 
   const run = async () => {
     if (!query.trim() || running) return
     setRunning(true); setReport(null); setError(null); setAgents({}); setRagHit(null)
     setDebateData({ optimist: null, skeptic: null }); setHitlPaused(false); setHitlSessionId(null)
+    setStreamingText("")
 
+    const opts = { language, sessionId }
     try {
       if (mode === "debate") {
-        await streamDebate(query.trim(), handleEvent)
+        await streamDebate(query.trim(), handleEvent, opts)
       } else if (mode === "hitl") {
-        await streamHitl(query.trim(), handleEvent)
+        await streamHitl(query.trim(), handleEvent, opts)
       } else {
-        await streamResearch(query.trim(), handleEvent)
+        await streamResearch(query.trim(), handleEvent, opts)
       }
     } catch (e) { setError(e.message); setRunning(false) }
   }
@@ -293,9 +321,16 @@ export default function App() {
   const reset = () => {
     setQuery(""); setReport(null); setError(null); setAgents({}); setRunning(false)
     setRagHit(null); setDebateData({ optimist: null, skeptic: null })
-    setHitlPaused(false); setHitlSessionId(null); setResuming(false)
+    setHitlPaused(false); setHitlSessionId(null); setResuming(false); setStreamingText("")
     txRef.current?.focus()
   }
+
+  // Load past searches when going idle
+  useEffect(() => {
+    if (!running && !report) {
+      fetchMemory(sessionId).then(h => setPastSearches(h)).catch(() => {})
+    }
+  }, [running, report, sessionId])
 
   const loadHistoryReport = (r) => {
     setReport({ report: r.final_report, query: r.topic, report_id: r.id })
@@ -361,6 +396,15 @@ export default function App() {
           />
           <div className="input-bar">
             <span className="input-hint">⌘ Enter to run · {mode} mode</span>
+            <select
+              className="lang-select"
+              value={language}
+              onChange={e => setLanguage(e.target.value)}
+              disabled={running}
+              title="Output language"
+            >
+              {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
+            </select>
             <button className="btn btn-run" onClick={run} disabled={running || !query.trim()}>
               {running ? "Researching..." : `Run ${mode === "debate" ? "Debate" : mode === "hitl" ? "HITL" : ""} →`}
             </button>
@@ -373,6 +417,18 @@ export default function App() {
             {EXAMPLES.map(ex => (
               <button key={ex} className="chip" onClick={() => { setQuery(ex); txRef.current?.focus() }}>
                 {ex}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Past Searches Memory Panel */}
+        {!pipelineVisible && !report && pastSearches.length > 0 && (
+          <div className="memory-panel">
+            <div className="memory-title">Recent Searches</div>
+            {pastSearches.slice(-5).reverse().map((s, i) => (
+              <button key={i} className="memory-item" onClick={() => { setQuery(s.query); txRef.current?.focus() }}>
+                {s.query}
               </button>
             ))}
           </div>
@@ -395,6 +451,14 @@ export default function App() {
                 <AgentCard key={a.id} a={a} s={agents[a.id]} />
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Streaming Writer Text */}
+        {streamingText && (
+          <div className="writer-stream">
+            <div className="writer-stream-label">Writing report…</div>
+            <pre className="writer-stream-text">{streamingText}</pre>
           </div>
         )}
 
@@ -438,6 +502,13 @@ export default function App() {
                 }}
               >
                 ↓ .md
+              </button>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => window.print()}
+                title="Export as PDF"
+              >
+                📄 PDF
               </button>
             </div>
             <div className="report-box">

@@ -677,3 +677,110 @@ html, body, #root {
   overflow-y: auto;
   font-size: 12px;
 }
+
+/* ── Language Selector ─────────────────────────────── */
+.lang-select {
+  background: var(--s1);
+  color: var(--t1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+}
+.lang-select:hover { border-color: var(--t2); }
+.lang-select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Writer Streaming Text ─────────────────────────── */
+.writer-stream {
+  margin-top: 24px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--s1);
+}
+.writer-stream-label {
+  padding: 8px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--t2);
+  border-bottom: 1px solid var(--border);
+}
+.writer-stream-text {
+  padding: 16px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 0;
+  color: var(--t1);
+}
+
+/* ── Memory Panel (past searches) ─────────────────── */
+.memory-panel {
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--s1);
+}
+.memory-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--t2);
+  margin-bottom: 10px;
+}
+.memory-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--t2);
+  font-size: 13px;
+  padding: 6px 0;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: color 0.15s;
+}
+.memory-item:last-child { border-bottom: none; }
+.memory-item:hover { color: var(--t1); }
+
+/* ── Print / PDF Export ────────────────────────────── */
+@media print {
+  .nav,
+  .mode-toggle,
+  .input-card,
+  .examples,
+  .memory-panel,
+  .pipeline,
+  .rag-banner,
+  .hitl-panel,
+  .debate-cards,
+  .writer-stream,
+  .err,
+  .idle,
+  .drawer,
+  .drawer-overlay {
+    display: none !important;
+  }
+  .report-top { display: none !important; }
+  .report-wrap { margin: 0 !important; }
+  .report-box {
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  .shell, .page, body { background: white !important; color: black !important; }
+  .md * { color: black !important; }
+}
