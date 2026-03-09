@@ -22,3 +22,5 @@ services:
         sync: false
       - key: LANGCHAIN_PROJECT
         value: ai-research-assistant
+      - key: PYTHON_VERSION
+        value: "3.11.9"
