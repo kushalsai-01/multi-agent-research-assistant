@@ -5,6 +5,7 @@ from langgraph.prebuilt import create_react_agent
 from tools.web_search import get_search_tool, quick_search
 from tools.text_tools import get_current_date
 from tools.citation_tracker import CitationTracker
+from agents.llm_factory import FALLBACK_MODEL
 import config
 
 SYSTEM_PROMPT = """You are a Senior Research Specialist. Your job is to 
@@ -26,9 +27,9 @@ Current date context: use the get_current_date tool if you need today's date.
 """
 
 
-def build_researcher_agent():
+def build_researcher_agent(model: str | None = None):
     llm = ChatGroq(
-        model=config.GROQ_MODEL,
+        model=model or config.GROQ_MODEL,
         temperature=config.LLM_TEMPERATURE,
         api_key=config.GROQ_API_KEY,
     )
@@ -47,16 +48,34 @@ def run_researcher(topic: str) -> tuple:
     """
     Run the researcher agent.
     Returns (research_text: str, citation_tracker: CitationTracker).
+    Automatically falls back to the smaller model if the primary is rate-limited.
     """
-    agent = build_researcher_agent()
-    tracker = CitationTracker()
+def _is_rate_limit(e: Exception) -> bool:
+    s = str(e).lower()
+    return "429" in s or "rate limit" in s or "ratelimit" in s or "too many requests" in s
 
-    result = agent.invoke(
-        {"messages": [HumanMessage(content=f"Research the following topic thoroughly:\n\n{topic}")]},
-        config={"callbacks": [tracker]},
-    )
 
-    # Extract the final AI message content
-    messages = result.get("messages", [])
-    text = messages[-1].content if messages else "No research data collected."
-    return text, tracker
+def run_researcher(topic: str) -> tuple:
+    """
+    Run the researcher agent. Automatically falls back to the smaller model
+    if the primary model is rate-limited (TPM or TPD exhausted).
+    Returns (research_text: str, citation_tracker: CitationTracker).
+    """
+    def _run(model: str | None = None):
+        agent = build_researcher_agent(model)
+        tracker = CitationTracker()
+        result = agent.invoke(
+            {"messages": [HumanMessage(content=f"Research the following topic thoroughly:\n\n{topic}")]},
+            config={"callbacks": [tracker]},
+        )
+        messages = result.get("messages", [])
+        text = messages[-1].content if messages else "No research data collected."
+        return text, tracker
+
+    try:
+        return _run()
+    except Exception as e:
+        if _is_rate_limit(e):
+            # Primary model quota exhausted — retry with fallback model
+            return _run(FALLBACK_MODEL)
+        raise

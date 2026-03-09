@@ -2,10 +2,9 @@
 Judge agent — synthesizes optimist and skeptic perspectives into a balanced report.
 Used in debate mode pipeline.
 """
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-import config
+from agents.llm_factory import get_llm
 
 JUDGE_PROMPT = """You are a neutral Judge. You have received two perspectives on
 the same research topic — one from an Optimist and one from a Skeptic.
@@ -34,11 +33,6 @@ Rules:
 
 def run_judge(optimist_report: str, skeptic_report: str, research_data: str, query: str) -> str:
     """Synthesize optimist and skeptic perspectives into a balanced final report."""
-    llm = ChatGroq(
-        model=config.GROQ_MODEL,
-        temperature=0.3,
-        api_key=config.GROQ_API_KEY,
-    )
     prompt = ChatPromptTemplate.from_messages([
         ("system", JUDGE_PROMPT),
         ("human", "Topic: {query}\n\n"
@@ -47,7 +41,7 @@ def run_judge(optimist_report: str, skeptic_report: str, research_data: str, que
                   "SKEPTIC REPORT:\n{skeptic}\n\n"
                   "Now write your balanced synthesis."),
     ])
-    return (prompt | llm | StrOutputParser()).invoke({
+    return (prompt | get_llm(0.3) | StrOutputParser()).invoke({
         "query": query,
         "research_data": research_data,
         "optimist": optimist_report,

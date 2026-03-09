@@ -87,7 +87,20 @@ async def run_in_thread(fn, *args):
 
 def _is_rate_limit(e: Exception) -> bool:
     s = str(e).lower()
-    return "rate limit" in s or "429" in s or "ratelimit" in s or "too many requests" in s
+    return "rate limit" in s or "429" in s or "ratelimit" in s or "too many requests" in s or "rate_limit_exceeded" in s
+
+
+def _friendly_error(e: Exception) -> str:
+    """Return a user-friendly error message for common failures."""
+    msg = str(e)
+    if "429" in msg or "rate_limit" in msg.lower() or "rate limit" in msg.lower():
+        if "tokens per day" in msg.lower() or "tpd" in msg.lower():
+            return ("Daily token quota exhausted for both models. "
+                    "Please wait ~24 hours for the Groq free tier to reset, "
+                    "or upgrade at console.groq.com/settings/billing.")
+        return ("Rate limited by Groq. The fallback model was also unavailable. "
+                "Please wait a minute and try again.")
+    return msg
 
 
 def _count_urls(text: str) -> int:
@@ -147,7 +160,7 @@ async def stream_pipeline(query: str, language: str = "English", session_id: str
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "researcher", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Researcher failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Analyst ─────────────────────────────────────────────────────────────
@@ -178,7 +191,7 @@ async def stream_pipeline(query: str, language: str = "English", session_id: str
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "analyst", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Analyst failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Metadata Extractor (runs after analyst) ─────────────────────────────
@@ -225,7 +238,7 @@ async def stream_pipeline(query: str, language: str = "English", session_id: str
             })
         except Exception as e:
             yield sse("agent_error", {"agent": "writer", "message": str(e)})
-            yield sse("pipeline_error", {"message": f"Writer failed: {e}"})
+            yield sse("pipeline_error", {"message": _friendly_error(e)})
             return
 
         # Reviewer
@@ -254,7 +267,7 @@ async def stream_pipeline(query: str, language: str = "English", session_id: str
                     await asyncio.sleep(delay)
                 else:
                     yield sse("agent_error", {"agent": "reviewer", "message": str(e)})
-                    yield sse("pipeline_error", {"message": f"Reviewer failed: {e}"})
+                    yield sse("pipeline_error", {"message": _friendly_error(e)})
                     return
 
         revision_count += 1
@@ -328,7 +341,7 @@ async def stream_debate(query: str, language: str = "English", session_id: str =
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "researcher", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Researcher failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Analyst ─────────────────────────────────────────────────────────────
@@ -353,7 +366,7 @@ async def stream_debate(query: str, language: str = "English", session_id: str =
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "analyst", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Analyst failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Optimist ────────────────────────────────────────────────────────────
@@ -377,7 +390,7 @@ async def stream_debate(query: str, language: str = "English", session_id: str =
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "optimist", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Optimist failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Skeptic ─────────────────────────────────────────────────────────────
@@ -401,7 +414,7 @@ async def stream_debate(query: str, language: str = "English", session_id: str =
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "skeptic", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Skeptic failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Judge ───────────────────────────────────────────────────────────────
@@ -425,7 +438,7 @@ async def stream_debate(query: str, language: str = "English", session_id: str =
                 await asyncio.sleep(delay)
             else:
                 yield sse("agent_error", {"agent": "judge", "message": str(e)})
-                yield sse("pipeline_error", {"message": f"Judge failed: {e}"})
+                yield sse("pipeline_error", {"message": _friendly_error(e)})
                 return
 
     # ── Save to DB ────────────────────────────────────────────────────────
@@ -526,7 +539,7 @@ async def stream_hitl(query: str):
 
     except Exception as e:
         yield sse("agent_error", {"agent": "researcher", "message": str(e)})
-        yield sse("pipeline_error", {"message": f"HITL researcher failed: {e}"})
+        yield sse("pipeline_error", {"message": _friendly_error(e)})
 
 
 async def stream_resume(session_id: str, feedback: str = ""):
@@ -583,7 +596,7 @@ async def stream_resume(session_id: str, feedback: str = ""):
         _hitl_sessions.pop(session_id, None)
 
     except Exception as e:
-        yield sse("pipeline_error", {"message": f"Resume failed: {e}"})
+        yield sse("pipeline_error", {"message": _friendly_error(e)})
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────

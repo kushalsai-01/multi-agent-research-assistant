@@ -1,6 +1,7 @@
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from agents.schemas import ReviewerOutput
+from agents.llm_factory import get_primary_llm, get_fallback_llm
 import config
 
 SYSTEM_PROMPT = """You are a Senior Editor and Quality Reviewer.
@@ -34,13 +35,6 @@ def _lang_suffix(language: str) -> str:
 def build_reviewer_chain(language: str = "English"):
     lang_note = _lang_suffix(language)
     system = SYSTEM_PROMPT + lang_note
-    llm = ChatGroq(
-        model=config.GROQ_MODEL,
-        temperature=0.2,
-        api_key=config.GROQ_API_KEY,
-    )
-    structured_llm = llm.with_structured_output(ReviewerOutput)
-
     prompt = ChatPromptTemplate.from_messages([
         ("system", system),
         ("human", "Original topic: {query}\n\n"
@@ -49,8 +43,9 @@ def build_reviewer_chain(language: str = "English"):
                   "Score this report, provide the polished version, and if score < 7 "
                   "give specific revision instructions."),
     ])
-
-    return prompt | structured_llm
+    primary_chain = prompt | get_primary_llm(0.2).with_structured_output(ReviewerOutput)
+    fallback_chain = prompt | get_fallback_llm(0.2).with_structured_output(ReviewerOutput)
+    return primary_chain.with_fallbacks([fallback_chain])
 
 
 def run_reviewer(report: str, research_data: str, query: str, language: str = "English") -> ReviewerOutput:
