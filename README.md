@@ -15,14 +15,11 @@
 ## 📐 Architecture Diagrams
 
 ### Diagram 1 — System Architecture
-> *(Full diagram in `/docs/system-architecture.excalidraw`)*
-
 ![System Architecture](docs/system-architecture.png)
 
 ---
 
 ### Diagram 2 — LangGraph Agent State Machine
-> *(Full diagram in `/docs/langgraph-state-machine.excalidraw`)*
 
 ![LangGraph State Machine](docs/langgraph-state-machine.png)
 
