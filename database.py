@@ -41,6 +41,7 @@ def save_report(
     quality_score: int = 0,
     revision_count: int = 0,
     mode: str = "standard",
+    session_id: str = "",
 ) -> Optional[str]:
     """Save a completed report to Supabase. Returns the row ID or None."""
     client = _get_client()
@@ -53,6 +54,7 @@ def save_report(
             "raw_research": raw_research,
             "analysis": analysis,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "session_id": session_id,
         }
         # Only include v2 columns if they have values (backward compatible)
         if quality_score:
@@ -70,7 +72,7 @@ def save_report(
     return None
 
 
-def get_reports(limit: int = 20) -> list:
+def get_reports(session_id: str, limit: int = 20) -> list:
     """Return a list of recent reports (id, topic, created_at only)."""
     client = _get_client()
     if not client:
@@ -79,6 +81,7 @@ def get_reports(limit: int = 20) -> list:
         result = (
             client.table("reports")
             .select("id, topic, created_at")
+            .eq("session_id", session_id)
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
@@ -89,7 +92,7 @@ def get_reports(limit: int = 20) -> list:
         return []
 
 
-def get_report(report_id: str) -> Optional[dict]:
+def get_report(report_id: str, session_id: str) -> Optional[dict]:
     """Return a single full report by ID."""
     client = _get_client()
     if not client:
@@ -99,6 +102,7 @@ def get_report(report_id: str) -> Optional[dict]:
             client.table("reports")
             .select("*")
             .eq("id", report_id)
+            .eq("session_id", session_id)
             .single()
             .execute()
         )

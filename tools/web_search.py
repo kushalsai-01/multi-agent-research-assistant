@@ -1,4 +1,5 @@
 from langchain_core.tools import tool
+import config
 
 
 def _ddg_search(query: str, max_results: int = 6) -> str:
@@ -8,7 +9,22 @@ def _ddg_search(query: str, max_results: int = 6) -> str:
     Returns a formatted string with Title / Link / Snippet for each result,
     so CitationTracker's URL regex can extract links reliably.
     """
-    # --- primary: ddgs package (v9+, better TLS fingerprinting) ---
+    # --- primary: Tavily, optimized for LLM research ---
+    if config.TAVILY_API_KEY:
+        try:
+            from tavily import TavilyClient
+            results = TavilyClient(api_key=config.TAVILY_API_KEY).search(
+                query=query, max_results=max_results, search_depth="basic"
+            ).get("results", [])
+            if results:
+                return "\n\n".join(
+                    f"Title: {r.get('title', '')}\nLink: {r.get('url', '')}\nSnippet: {r.get('content', '')}"
+                    for r in results
+                )
+        except Exception:
+            pass
+
+    # --- fallback: ddgs package (v9+, better TLS fingerprinting) ---
     try:
         from ddgs import DDGS
         with DDGS() as ddgs:

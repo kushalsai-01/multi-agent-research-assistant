@@ -2,9 +2,10 @@ services:
   - type: web
     name: ai-research-assistant
     runtime: python
-    pythonVersion: "3.11.0"
+    pythonVersion: "3.11.9"
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: GROQ_API_KEY
         sync: false
@@ -24,5 +25,19 @@ services:
         value: ai-research-assistant
       - key: GROQ_FALLBACK_MODEL
         value: "llama-3.1-8b-instant"
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_COLLECTION
+        value: research_documents
+      - key: CORS_ORIGINS
+        sync: false
+      - key: MAX_UPLOAD_MB
+        value: "20"
       - key: PYTHON_VERSION
         value: "3.11.9"
+      - key: DEPLOYMENT_ENV
+        value: production

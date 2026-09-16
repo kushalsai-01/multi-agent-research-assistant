@@ -1,796 +1,242 @@
-"""
-FastAPI backend for AI Research Assistant — v2.
-Supports Standard, Debate, and HITL modes via SSE streaming.
+from __future__ import annotations
 
-Run locally:
-    uvicorn api.main:app --reload --port 8000
-
-Deploy on Render:
-    Start command: uvicorn api.main:app --host 0.0.0.0 --port $PORT
-"""
-
-import sys
-import os
-import json
-import time
 import asyncio
-import uuid
-from pathlib import Path
+import json
+import re
+import time
 from datetime import datetime
+from pathlib import Path
+import sys
 
-# Make sure project root is importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import config  # loads .env and sets LangSmith env vars
-
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-
+import config
+from agents.analyst import analyst_to_str, run_analyst
+from agents.citation import build_citation_context
+from agents.document_rag import run_document_rag
 from agents.researcher import run_researcher
-from agents.analyst import run_analyst, analyst_to_str
-from agents.writer import run_writer, writer_to_markdown, astream_writer
 from agents.reviewer import run_reviewer
-from memory import remember_query, get_memory
-from agents.metadata_extractor import run_metadata_extractor, metadata_to_context
-from agents.debater import run_optimist, run_skeptic
-from agents.judge import run_judge
-from agents.schemas import AnalysisOutput, WriterOutput, ReviewerOutput
-from database import save_report, get_reports, get_report
-from rag import get_rag_context, store_report_embedding
+from agents.writer import astream_writer
+from database import get_report, get_reports, save_report
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from memory import get_memory, remember_query
+from pydantic import BaseModel, Field
+from rag import delete_document, ingest_pdf, list_documents
 
-# HITL session storage (in-memory; resets on restart)
-from orchestrator import build_hitl_graph, ResearchState
-_hitl_sessions: dict = {}
-_hitl_graph = None
-
+MAX_RETRIES = 3
+MAX_RESEARCH_RETRIES = 1
 MAX_REVISIONS = 2
 
-
-app = FastAPI(
-    title="AI Research Assistant",
-    description="Multi-agent research pipeline with LangGraph + LangChain (v2)",
-    version="2.0.0",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="AI Research Assistant", version="3.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 
 class ResearchRequest(BaseModel):
-    query: str
-    language: str = "English"
-    session_id: str = ""
+    query: str = Field(min_length=1, max_length=2000)
+    language: str = Field(default="English", max_length=50)
+    session_id: str = Field(min_length=8, max_length=100)
 
 
-class ResumeRequest(BaseModel):
-    session_id: str
-    feedback: str = ""
+def session_scope(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", value):
+        raise HTTPException(status_code=400, detail="A valid session identifier is required.")
+    return value
 
-
-# ─── SSE helpers ──────────────────────────────────────────────────────────────
 
 def sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-async def run_in_thread(fn, *args):
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, fn, *args)
+async def run_in_thread(function, *args):
+    return await asyncio.get_running_loop().run_in_executor(None, function, *args)
 
 
-def _is_rate_limit(e: Exception) -> bool:
-    s = str(e).lower()
-    return "rate limit" in s or "429" in s or "ratelimit" in s or "too many requests" in s or "rate_limit_exceeded" in s
+def is_transient(error: Exception) -> bool:
+    message = str(error).lower()
+    return any(marker in message for marker in ("429", "rate limit", "ratelimit", "too many requests", "rate_limit_exceeded", "timeout", "temporarily unavailable"))
 
 
-def _friendly_error(e: Exception) -> str:
-    """Return a user-friendly error message for common failures."""
-    msg = str(e)
-    if "429" in msg or "rate_limit" in msg.lower() or "rate limit" in msg.lower():
-        if "tokens per day" in msg.lower() or "tpd" in msg.lower():
-            return ("Daily token quota exhausted for both models. "
-                    "Please wait ~24 hours for the Groq free tier to reset, "
-                    "or upgrade at console.groq.com/settings/billing.")
-        return ("Rate limited by Groq. The fallback model was also unavailable. "
-                "Please wait a minute and try again.")
-    return msg
+def friendly_error(error: Exception) -> str:
+    message = str(error)
+    if is_transient(error):
+        return "A model or search provider is temporarily unavailable. The request was retried; please try again shortly."
+    return message
 
 
-def _count_urls(text: str) -> int:
-    return text.count("http://") + text.count("https://")
-
-
-def _word_count(text: str) -> int:
-    return len(text.split())
-
-
-MAX_RETRIES = 3
-
-
-# ─── Standard Streaming Pipeline ──────────────────────────────────────────────
-
-async def stream_pipeline(query: str, language: str = "English", session_id: str = ""):
+async def stream_pipeline(query: str, language: str, session_id: str):
     yield sse("start", {"query": query, "language": language, "timestamp": datetime.now().isoformat()})
-
-    # ── RAG check — look for cached similar report ───────────────────────
-    try:
-        rag_result = await run_in_thread(get_rag_context, query)
-        if rag_result:
-            yield sse("rag_hit", {
-                "topic": rag_result.get("topic", ""),
-                "similarity": rag_result.get("similarity", 0),
-                "report_id": rag_result.get("id", ""),
-                "message": f"Found similar report: \"{rag_result.get('topic', '')}\" — generating fresh analysis anyway.",
-            })
-    except Exception:
-        pass  # RAG is optional
-
-    # ── Researcher ──────────────────────────────────────────────────────────
-    yield sse("agent_start", {
-        "agent": "researcher",
-        "label": "Researcher",
-        "message": "Searching the web for sources...",
-    })
-    research_data = None
+    yield sse("agent_start", {"agent": "researcher", "label": "Researcher", "message": "Searching current sources and uploaded evidence..."})
+    research_data = ""
     citation_stats = {}
     for attempt in range(MAX_RETRIES):
         try:
-            t0 = time.time()
+            started = time.time()
             research_data, tracker = await run_in_thread(run_researcher, query)
             citation_stats = tracker.get_stats()
-            yield sse("agent_done", {
-                "agent": "researcher",
-                "duration": round(time.time() - t0, 1),
-                "chars": len(research_data),
-                "stat": f"{citation_stats['total_urls']} sources found",
-                "preview": research_data[:600],
-            })
+            yield sse("agent_done", {"agent": "researcher", "duration": round(time.time() - started, 1), "chars": len(research_data), "stat": f"{citation_stats.get('total_urls', 0)} web sources"})
             break
-        except Exception as e:
-            if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
+        except Exception as error:
+            if attempt < MAX_RETRIES - 1 and is_transient(error):
                 delay = 2 ** attempt
-                yield sse("agent_retry", {"agent": "researcher", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
+                yield sse("agent_retry", {"agent": "researcher", "attempt": attempt + 1, "delay": delay, "message": f"Retrying research in {delay}s..."})
                 await asyncio.sleep(delay)
-            else:
-                yield sse("agent_error", {"agent": "researcher", "message": str(e)})
-                yield sse("pipeline_error", {"message": _friendly_error(e)})
-                return
-
-    # ── Analyst ─────────────────────────────────────────────────────────────
-    yield sse("agent_start", {
-        "agent": "analyst",
-        "label": "Analyst",
-        "message": f"Extracting insights from {citation_stats.get('total_urls', 0)} sources...",
-    })
-    analysis_str = None
-    analysis_obj = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            t0 = time.time()
-            analysis_obj = await run_in_thread(run_analyst, research_data, query)
-            analysis_str = analyst_to_str(analysis_obj)
-            yield sse("agent_done", {
-                "agent": "analyst",
-                "duration": round(time.time() - t0, 1),
-                "chars": len(analysis_str),
-                "stat": f"{len(analysis_obj.key_findings)} findings · confidence {analysis_obj.overall_confidence}/10",
-                "preview": analysis_str[:600],
-            })
-            break
-        except Exception as e:
-            if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
-                delay = 2 ** attempt
-                yield sse("agent_retry", {"agent": "analyst", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
-                await asyncio.sleep(delay)
-            else:
-                yield sse("agent_error", {"agent": "analyst", "message": str(e)})
-                yield sse("pipeline_error", {"message": _friendly_error(e)})
-                return
-
-    # ── Metadata Extractor (runs after analyst) ─────────────────────────────
-    metadata = {}
-    try:
-        metadata = await run_in_thread(run_metadata_extractor, research_data, query)
-    except Exception:
-        pass  # Metadata is optional enrichment
-
-    enriched_analysis = analysis_str
-    if metadata:
-        enriched_analysis += "\n\n" + metadata_to_context(metadata)
-
-    # ── Writer + Reviewer Loop ──────────────────────────────────────────────
-    revision_count = 0
-    revision_instructions = ""
-    final_report = None
-
-    while revision_count <= MAX_REVISIONS:
-        # Writer
-        if revision_count > 0:
-            yield sse("revision_start", {
-                "revision": revision_count,
-                "message": f"Revision {revision_count}/{MAX_REVISIONS} — writer improving report...",
-            })
-        yield sse("agent_start", {
-            "agent": "writer",
-            "label": "Writer",
-            "message": "Composing report..." if revision_count == 0 else f"Revising report (round {revision_count})...",
-        })
-
-        report_md = ""
-        try:
-            t0 = time.time()
-            async for chunk in astream_writer(enriched_analysis, query, revision_instructions, language):
-                report_md += chunk
-                yield sse("writer_token", {"token": chunk})
-            yield sse("agent_done", {
-                "agent": "writer",
-                "duration": round(time.time() - t0, 1),
-                "chars": len(report_md),
-                "stat": f"{len(report_md.split()):,} words" + (f" (rev {revision_count})" if revision_count > 0 else ""),
-                "preview": report_md[:600],
-            })
-        except Exception as e:
-            yield sse("agent_error", {"agent": "writer", "message": str(e)})
-            yield sse("pipeline_error", {"message": _friendly_error(e)})
+                continue
+            yield sse("agent_error", {"agent": "researcher", "message": str(error)})
+            yield sse("pipeline_error", {"message": friendly_error(error)})
             return
 
-        # Reviewer
-        yield sse("agent_start", {
-            "agent": "reviewer",
-            "label": "Reviewer",
-            "message": "Running QA — checking quality & accuracy...",
-        })
-
-        reviewer_output = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                t0 = time.time()
-                reviewer_output = await run_in_thread(run_reviewer, report_md, research_data, query, language)
-                yield sse("agent_done", {
-                    "agent": "reviewer",
-                    "duration": round(time.time() - t0, 1),
-                    "chars": len(reviewer_output.polished_report),
-                    "stat": f"score {reviewer_output.quality_score}/10 · {'✓ passed' if reviewer_output.passed else '✗ needs revision'}",
-                })
-                break
-            except Exception as e:
-                if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
-                    delay = 2 ** attempt
-                    yield sse("agent_retry", {"agent": "reviewer", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
-                    await asyncio.sleep(delay)
-                else:
-                    yield sse("agent_error", {"agent": "reviewer", "message": str(e)})
-                    yield sse("pipeline_error", {"message": _friendly_error(e)})
-                    return
-
-        revision_count += 1
-
-        if reviewer_output.passed or revision_count > MAX_REVISIONS:
-            final_report = reviewer_output.polished_report
-            break
-        else:
-            revision_instructions = reviewer_output.revision_instructions
-
-    if not final_report and reviewer_output:
-        final_report = reviewer_output.polished_report
-
-    # ── Save to Supabase ─────────────────────────────────────────────────────
-    report_id = None
     try:
-        report_id = await run_in_thread(
-            save_report, query, final_report, research_data, analysis_str
-        )
-        if report_id:
-            try:
-                await run_in_thread(store_report_embedding, report_id, query, final_report)
-            except Exception:
-                pass
-    except Exception as e:
-        print(f"[DB] Save failed: {e}")
+        rag_context, retrieved_chunks = await run_in_thread(run_document_rag, query, session_id)
+        yield sse("retrieved_sources", {"sources": retrieved_chunks})
+    except Exception:
+        rag_context, retrieved_chunks = "", []
+    combined_research = research_data + (f"\n\n{rag_context}" if rag_context else "")
+    citation_context = build_citation_context(retrieved_chunks)
 
-    # ── Final event ──────────────────────────────────────────────────────────
-    yield sse("complete", {
-        "report": final_report,
-        "report_id": report_id,
-        "query": query,
-        "quality_score": reviewer_output.quality_score if reviewer_output else 0,
-        "revisions": revision_count,
-        "citation_stats": citation_stats,
-    })
-
-    # ── Persist session memory ───────────────────────────────────────────────
-    if session_id:
+    yield sse("agent_start", {"agent": "analyst", "label": "Analyst", "message": "Validating evidence and extracting findings..."})
+    analysis_obj = None
+    analysis_str = ""
+    for attempt in range(MAX_RETRIES):
         try:
-            remember_query(session_id, query, report_id)
+            started = time.time()
+            analysis_obj = await run_in_thread(run_analyst, combined_research, query)
+            analysis_str = analyst_to_str(analysis_obj)
+            yield sse("agent_done", {"agent": "analyst", "duration": round(time.time() - started, 1), "chars": len(analysis_str), "stat": f"{len(analysis_obj.key_findings)} findings · confidence {analysis_obj.overall_confidence}/10"})
+            break
+        except Exception as error:
+            if attempt < MAX_RETRIES - 1 and is_transient(error):
+                delay = 2 ** attempt
+                yield sse("agent_retry", {"agent": "analyst", "attempt": attempt + 1, "delay": delay, "message": f"Retrying analysis in {delay}s..."})
+                await asyncio.sleep(delay)
+                continue
+            yield sse("agent_error", {"agent": "analyst", "message": str(error)})
+            yield sse("pipeline_error", {"message": friendly_error(error)})
+            return
+
+    if analysis_obj and analysis_obj.overall_confidence < 6:
+        gaps = analysis_obj.gaps_and_contradictions
+        try:
+            yield sse("agent_retry", {"agent": "researcher", "attempt": 1, "message": "Low confidence detected; checking targeted evidence..."})
+            additional_research, _ = await run_in_thread(run_researcher, query, "", gaps)
+            combined_research += f"\n\n{additional_research}"
+            analysis_obj = await run_in_thread(run_analyst, combined_research, query)
+            analysis_str = analyst_to_str(analysis_obj)
         except Exception:
             pass
 
-
-# ─── Debate Streaming Pipeline ────────────────────────────────────────────────
-
-async def stream_debate(query: str, language: str = "English", session_id: str = ""):
-    yield sse("start", {"query": query, "mode": "debate", "language": language, "timestamp": datetime.now().isoformat()})
-
-    # ── Researcher ──────────────────────────────────────────────────────────
-    yield sse("agent_start", {"agent": "researcher", "label": "Researcher", "message": "Searching the web..."})
-    research_data = None
-    citation_stats = {}
-    for attempt in range(MAX_RETRIES):
-        try:
-            t0 = time.time()
-            research_data, tracker = await run_in_thread(run_researcher, query)
-            citation_stats = tracker.get_stats()
-            yield sse("agent_done", {
-                "agent": "researcher",
-                "duration": round(time.time() - t0, 1),
-                "chars": len(research_data),
-                "stat": f"{citation_stats['total_urls']} sources",
-            })
-            break
-        except Exception as e:
-            if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
-                delay = 2 ** attempt
-                yield sse("agent_retry", {"agent": "researcher", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
-                await asyncio.sleep(delay)
-            else:
-                yield sse("agent_error", {"agent": "researcher", "message": str(e)})
-                yield sse("pipeline_error", {"message": _friendly_error(e)})
-                return
-
-    # ── Analyst ─────────────────────────────────────────────────────────────
-    yield sse("agent_start", {"agent": "analyst", "label": "Analyst", "message": "Analyzing research data..."})
-    analysis_str = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            t0 = time.time()
-            analysis_obj = await run_in_thread(run_analyst, research_data, query)
-            analysis_str = analyst_to_str(analysis_obj)
-            yield sse("agent_done", {
-                "agent": "analyst",
-                "duration": round(time.time() - t0, 1),
-                "chars": len(analysis_str),
-                "stat": f"{len(analysis_obj.key_findings)} findings",
-            })
-            break
-        except Exception as e:
-            if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
-                delay = 2 ** attempt
-                yield sse("agent_retry", {"agent": "analyst", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
-                await asyncio.sleep(delay)
-            else:
-                yield sse("agent_error", {"agent": "analyst", "message": str(e)})
-                yield sse("pipeline_error", {"message": _friendly_error(e)})
-                return
-
-    # ── Optimist ────────────────────────────────────────────────────────────
-    yield sse("agent_start", {"agent": "optimist", "label": "Optimist", "message": "Writing optimistic perspective..."})
-    optimist_report = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            t0 = time.time()
-            optimist_report = await run_in_thread(run_optimist, analysis_str, query)
-            yield sse("agent_done", {
-                "agent": "optimist",
-                "duration": round(time.time() - t0, 1),
-                "chars": len(optimist_report),
-                "stat": f"{_word_count(optimist_report)} words",
-            })
-            break
-        except Exception as e:
-            if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
-                delay = 2 ** attempt
-                yield sse("agent_retry", {"agent": "optimist", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
-                await asyncio.sleep(delay)
-            else:
-                yield sse("agent_error", {"agent": "optimist", "message": str(e)})
-                yield sse("pipeline_error", {"message": _friendly_error(e)})
-                return
-
-    # ── Skeptic ─────────────────────────────────────────────────────────────
-    yield sse("agent_start", {"agent": "skeptic", "label": "Skeptic", "message": "Writing critical analysis..."})
-    skeptic_report = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            t0 = time.time()
-            skeptic_report = await run_in_thread(run_skeptic, analysis_str, query)
-            yield sse("agent_done", {
-                "agent": "skeptic",
-                "duration": round(time.time() - t0, 1),
-                "chars": len(skeptic_report),
-                "stat": f"{_word_count(skeptic_report)} words",
-            })
-            break
-        except Exception as e:
-            if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
-                delay = 2 ** attempt
-                yield sse("agent_retry", {"agent": "skeptic", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
-                await asyncio.sleep(delay)
-            else:
-                yield sse("agent_error", {"agent": "skeptic", "message": str(e)})
-                yield sse("pipeline_error", {"message": _friendly_error(e)})
-                return
-
-    # ── Judge ───────────────────────────────────────────────────────────────
-    yield sse("agent_start", {"agent": "judge", "label": "Judge", "message": "Synthesizing balanced verdict..."})
-    final_report = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            t0 = time.time()
-            final_report = await run_in_thread(run_judge, optimist_report, skeptic_report, research_data, query)
-            yield sse("agent_done", {
-                "agent": "judge",
-                "duration": round(time.time() - t0, 1),
-                "chars": len(final_report),
-                "stat": f"{_word_count(final_report)} words balanced",
-            })
-            break
-        except Exception as e:
-            if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
-                delay = 2 ** attempt
-                yield sse("agent_retry", {"agent": "judge", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
-                await asyncio.sleep(delay)
-            else:
-                yield sse("agent_error", {"agent": "judge", "message": str(e)})
-                yield sse("pipeline_error", {"message": _friendly_error(e)})
-                return
-
-    # ── Save to DB ────────────────────────────────────────────────────────
-    report_id = None
-    try:
-        report_id = await run_in_thread(save_report, query, final_report, research_data, analysis_str)
-        if report_id:
-            try:
-                await run_in_thread(store_report_embedding, report_id, query, final_report)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    yield sse("complete", {
-        "report": final_report,
-        "report_id": report_id,
-        "query": query,
-        "mode": "debate",
-        "optimist_report": optimist_report,
-        "skeptic_report": skeptic_report,
-        "citation_stats": citation_stats,
-    })
-
-    if session_id:
-        try:
-            remember_query(session_id, query, report_id)
-        except Exception:
-            pass
-
-
-# ─── HITL Streaming Pipeline ──────────────────────────────────────────────────
-
-async def stream_hitl(query: str, language: str = "English", user_session_id: str = ""):
-    """Start a HITL pipeline — runs researcher then pauses for human review."""
-    global _hitl_graph
-    if _hitl_graph is None:
-        try:
-            _hitl_graph = build_hitl_graph()
-        except Exception as e:
-            yield sse("pipeline_error", {"message": f"Failed to build HITL graph: {e}"})
-            return
-
-    session_id = str(uuid.uuid4())[:8]
-
-    yield sse("start", {"query": query, "mode": "hitl", "session_id": session_id, "timestamp": datetime.now().isoformat()})
-
-    yield sse("agent_start", {"agent": "researcher", "label": "Researcher", "message": "Searching the web..."})
-
-    initial_state: ResearchState = {
-        "query": query,
-        "research_data": "",
-        "analysis": "",
-        "analysis_obj": None,
-        "metadata": None,
-        "report": "",
-        "writer_output": None,
-        "reviewer_output": None,
-        "review": "",
-        "final_report": "",
-        "current_agent": "",
-        "log": [],
-        "error": None,
-        "revision_count": 0,
-        "quality_score": 0,
-        "traced_urls": [],
-        "citation_stats": {},
-    }
-
-    thread_config = {"configurable": {"thread_id": session_id}}
-
-    try:
-        t0 = time.time()
-        # This will run researcher then pause (interrupt_after=["researcher"])
-        result = await run_in_thread(
-            lambda: _hitl_graph.invoke(initial_state, config=thread_config)
-        )
-
-        research_data = result.get("research_data", "")
-        citation_stats = result.get("citation_stats", {})
-
-        yield sse("agent_done", {
-            "agent": "researcher",
-            "duration": round(time.time() - t0, 1),
-            "chars": len(research_data),
-            "stat": f"{citation_stats.get('total_urls', 0)} sources found",
-            "preview": research_data[:800],
-        })
-
-        # Store session for resume — keep full research_data so analyst gets complete context
-        _hitl_sessions[session_id] = {
-            "thread_config": thread_config,
-            "query": query,
-            "language": language,
-            "user_session_id": user_session_id,
-            "research_data": research_data,
-            "research_preview": research_data[:2000],
-        }
-
-        yield sse("hitl_pause", {
-            "session_id": session_id,
-            "message": "Research complete. Review the findings above, then click Resume to continue with analysis, writing, and review.",
-            "research_preview": research_data[:2000],
-        })
-
-    except Exception as e:
-        yield sse("agent_error", {"agent": "researcher", "message": str(e)})
-        yield sse("pipeline_error", {"message": _friendly_error(e)})
-
-
-async def stream_resume(session_id: str, feedback: str = ""):
-    """Resume a paused HITL pipeline — streams analyst → writer → reviewer just like stream_pipeline."""
-    session = _hitl_sessions.get(session_id)
-    if not session:
-        yield sse("pipeline_error", {"message": "Session not found or expired. Please start a new HITL session."})
-        return
-
-    query = session["query"]
-    language = session.get("language", "English")
-    user_session_id = session.get("user_session_id", "")
-    # Use full research_data if available (stored since fix), else fall back to preview
-    research_data = session.get("research_data") or session.get("research_preview", "")
-    if feedback:
-        research_data = research_data + f"\n\n## Human Feedback\n{feedback}"
-
-    yield sse("start", {"query": query, "mode": "hitl_resume", "session_id": session_id})
-
-    if feedback:
-        yield sse("hitl_feedback", {"feedback": feedback, "message": "Human feedback received — incorporating into analysis."})
-
-    # ── Analyst ─────────────────────────────────────────────────────────────
-    yield sse("agent_start", {"agent": "analyst", "label": "Analyst", "message": "Analyzing research data..."})
-    analysis_str = None
-    analysis_obj = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            t0 = time.time()
-            analysis_obj = await run_in_thread(run_analyst, research_data, query)
-            analysis_str = analyst_to_str(analysis_obj)
-            yield sse("agent_done", {
-                "agent": "analyst",
-                "duration": round(time.time() - t0, 1),
-                "chars": len(analysis_str),
-                "stat": f"{len(analysis_obj.key_findings)} findings · confidence {analysis_obj.overall_confidence}/10",
-            })
-            break
-        except Exception as e:
-            if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
-                delay = 2 ** attempt
-                yield sse("agent_retry", {"agent": "analyst", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
-                await asyncio.sleep(delay)
-            else:
-                yield sse("agent_error", {"agent": "analyst", "message": str(e)})
-                yield sse("pipeline_error", {"message": _friendly_error(e)})
-                return
-
-    # ── Metadata ─────────────────────────────────────────────────────────────
-    metadata = {}
-    try:
-        metadata = await run_in_thread(run_metadata_extractor, research_data, query)
-    except Exception:
-        pass
-
-    enriched_analysis = analysis_str
-    if metadata:
-        enriched_analysis += "\n\n" + metadata_to_context(metadata)
-
-    # ── Writer + Reviewer Loop ──────────────────────────────────────────────
+    enriched_analysis = analysis_str + (f"\n\n{rag_context}\n\n{citation_context}" if rag_context else "")
     revision_count = 0
     revision_instructions = ""
-    final_report = None
     reviewer_output = None
-
+    final_report = ""
     while revision_count <= MAX_REVISIONS:
-        if revision_count > 0:
-            yield sse("revision_start", {
-                "revision": revision_count,
-                "message": f"Revision {revision_count}/{MAX_REVISIONS} — writer improving report...",
-            })
-        yield sse("agent_start", {
-            "agent": "writer",
-            "label": "Writer",
-            "message": "Composing report..." if revision_count == 0 else f"Revising report (round {revision_count})...",
-        })
-
-        report_md = ""
+        if revision_count:
+            yield sse("revision_start", {"revision": revision_count, "message": f"Applying quality revision {revision_count}/{MAX_REVISIONS}..."})
+        yield sse("agent_start", {"agent": "writer", "label": "Writer", "message": "Writing a grounded report..."})
+        report = ""
         try:
-            t0 = time.time()
-            async for chunk in astream_writer(enriched_analysis, query, revision_instructions, language):
-                report_md += chunk
-                yield sse("writer_token", {"token": chunk})
-            yield sse("agent_done", {
-                "agent": "writer",
-                "duration": round(time.time() - t0, 1),
-                "chars": len(report_md),
-                "stat": f"{len(report_md.split()):,} words" + (f" (rev {revision_count})" if revision_count > 0 else ""),
-            })
-        except Exception as e:
-            yield sse("agent_error", {"agent": "writer", "message": str(e)})
-            yield sse("pipeline_error", {"message": _friendly_error(e)})
+            started = time.time()
+            async for token in astream_writer(enriched_analysis, query, revision_instructions, language):
+                report += token
+                yield sse("writer_token", {"token": token})
+            yield sse("agent_done", {"agent": "writer", "duration": round(time.time() - started, 1), "chars": len(report), "stat": f"{len(report.split()):,} words"})
+        except Exception as error:
+            yield sse("agent_error", {"agent": "writer", "message": str(error)})
+            yield sse("pipeline_error", {"message": friendly_error(error)})
             return
 
-        yield sse("agent_start", {"agent": "reviewer", "label": "Reviewer", "message": "Running QA — checking quality & accuracy..."})
+        yield sse("agent_start", {"agent": "reviewer", "label": "Reviewer", "message": "Checking evidence, citations, and report quality..."})
         for attempt in range(MAX_RETRIES):
             try:
-                t0 = time.time()
-                reviewer_output = await run_in_thread(run_reviewer, report_md, research_data, query, language)
-                yield sse("agent_done", {
-                    "agent": "reviewer",
-                    "duration": round(time.time() - t0, 1),
-                    "chars": len(reviewer_output.polished_report),
-                    "stat": f"score {reviewer_output.quality_score}/10 · {'✓ passed' if reviewer_output.passed else '✗ needs revision'}",
-                })
+                started = time.time()
+                reviewer_output = await run_in_thread(run_reviewer, report, combined_research, query, language)
+                yield sse("agent_done", {"agent": "reviewer", "duration": round(time.time() - started, 1), "chars": len(reviewer_output.polished_report), "stat": f"score {reviewer_output.quality_score}/10"})
                 break
-            except Exception as e:
-                if attempt < MAX_RETRIES - 1 and _is_rate_limit(e):
+            except Exception as error:
+                if attempt < MAX_RETRIES - 1 and is_transient(error):
                     delay = 2 ** attempt
-                    yield sse("agent_retry", {"agent": "reviewer", "attempt": attempt + 1, "delay": delay, "message": f"Rate limited — retrying in {delay}s..."})
+                    yield sse("agent_retry", {"agent": "reviewer", "attempt": attempt + 1, "delay": delay, "message": f"Retrying review in {delay}s..."})
                     await asyncio.sleep(delay)
-                else:
-                    yield sse("agent_error", {"agent": "reviewer", "message": str(e)})
-                    yield sse("pipeline_error", {"message": _friendly_error(e)})
-                    return
-
+                    continue
+                yield sse("agent_error", {"agent": "reviewer", "message": str(error)})
+                yield sse("pipeline_error", {"message": friendly_error(error)})
+                return
         revision_count += 1
-        if reviewer_output.passed or revision_count > MAX_REVISIONS:
-            final_report = reviewer_output.polished_report
-            break
-        else:
-            revision_instructions = reviewer_output.revision_instructions
-
-    if not final_report and reviewer_output:
         final_report = reviewer_output.polished_report
+        if reviewer_output.passed or revision_count > MAX_REVISIONS:
+            break
+        revision_instructions = reviewer_output.revision_instructions
 
-    # ── Save to Supabase ─────────────────────────────────────────────────────
     report_id = None
     try:
-        report_id = await run_in_thread(save_report, query, final_report, research_data, analysis_str)
-        if report_id:
-            try:
-                await run_in_thread(store_report_embedding, report_id, query, final_report)
-            except Exception:
-                pass
-    except Exception as e:
-        print(f"[DB] Save failed: {e}")
+        report_id = await run_in_thread(lambda: save_report(query, final_report, combined_research, analysis_str, reviewer_output.quality_score if reviewer_output else 0, revision_count, "standard", session_id))
+        remember_query(session_id, query, report_id)
+    except Exception:
+        pass
+    yield sse("complete", {"report": final_report, "report_id": report_id, "query": query, "quality_score": reviewer_output.quality_score if reviewer_output else 0, "revisions": revision_count, "citation_stats": citation_stats, "retrieved_sources": retrieved_chunks})
 
-    yield sse("complete", {
-        "report": final_report,
-        "report_id": report_id,
-        "query": query,
-        "mode": "hitl",
-        "quality_score": reviewer_output.quality_score if reviewer_output else 0,
-    })
-
-    # Persist session memory
-    if user_session_id:
-        try:
-            remember_query(user_session_id, query, report_id)
-        except Exception:
-            pass
-
-    _hitl_sessions.pop(session_id, None)
-
-
-# ─── Routes ───────────────────────────────────────────────────────────────────
 
 @app.post("/api/research")
-async def research(req: ResearchRequest):
-    if not req.query.strip():
-        raise HTTPException(status_code=400, detail="Query cannot be empty")
+async def research(request: ResearchRequest):
     if not config.GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY is not set on the server")
-
-    return StreamingResponse(
-        stream_pipeline(req.query.strip(), req.language, req.session_id),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
-    )
+        raise HTTPException(status_code=503, detail="The research service is not configured.")
+    return StreamingResponse(stream_pipeline(request.query.strip(), request.language, session_scope(request.session_id)), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
 
 
-@app.post("/api/research/debate")
-async def research_debate(req: ResearchRequest):
-    if not req.query.strip():
-        raise HTTPException(status_code=400, detail="Query cannot be empty")
-    if not config.GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY is not set on the server")
-
-    return StreamingResponse(
-        stream_debate(req.query.strip(), req.language, req.session_id),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
-    )
+@app.post("/api/documents")
+async def upload_document(file: UploadFile = File(...), x_session_id: str = Header(default="")):
+    if file.content_type not in ("application/pdf", "application/x-pdf"):
+        raise HTTPException(status_code=400, detail="Please upload a PDF file.")
+    try:
+        return await run_in_thread(ingest_pdf, file, session_scope(x_session_id), {"content_type": file.content_type})
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"PDF ingestion failed: {error}")
 
 
-@app.post("/api/research/hitl")
-async def research_hitl(req: ResearchRequest):
-    if not req.query.strip():
-        raise HTTPException(status_code=400, detail="Query cannot be empty")
-    if not config.GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY is not set on the server")
-
-    return StreamingResponse(
-        stream_hitl(req.query.strip(), req.language, req.session_id),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
-    )
+@app.get("/api/documents")
+async def documents(x_session_id: str = Header(default="")):
+    return await run_in_thread(list_documents, session_scope(x_session_id))
 
 
-@app.post("/api/research/resume")
-async def research_resume(req: ResumeRequest):
-    if not req.session_id:
-        raise HTTPException(status_code=400, detail="session_id required")
-
-    return StreamingResponse(
-        stream_resume(req.session_id, req.feedback),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
-    )
+@app.delete("/api/documents/{document_id}")
+async def remove_document(document_id: str, x_session_id: str = Header(default="")):
+    if not await run_in_thread(delete_document, document_id, session_scope(x_session_id)):
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"deleted": True, "id": document_id}
 
 
 @app.get("/api/reports")
-async def list_reports_endpoint():
-    return get_reports()
+async def reports(x_session_id: str = Header(default="")):
+    return get_reports(session_scope(x_session_id))
 
 
 @app.get("/api/reports/{report_id}")
-async def single_report(report_id: str):
-    data = get_report(report_id)
+async def report(report_id: str, x_session_id: str = Header(default="")):
+    data = get_report(report_id, session_scope(x_session_id))
     if not data:
         raise HTTPException(status_code=404, detail="Report not found")
     return data
 
 
 @app.get("/api/memory/{session_id}")
-async def memory_endpoint(session_id: str):
-    """Return past queries for a given client session."""
+async def memory(session_id: str):
+    session_id = session_scope(session_id)
     return {"session_id": session_id, "history": get_memory(session_id)}
 
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
-        "version": "2.0.0",
-        "langsmith_tracing": config.LANGCHAIN_TRACING_V2 == "true",
-        "supabase_configured": bool(config.SUPABASE_URL and config.SUPABASE_KEY),
-        "model": config.GROQ_MODEL,
-        "features": ["standard", "debate", "hitl", "rag", "citations", "conditional_review",
-                     "streaming_writer", "session_memory", "multi_language", "pdf_export",
-                     "langsmith_eval"],
-    }
+    issues = config.deployment_issues() if config.DEPLOYMENT_ENV == "production" else []
+    return {"status": "ok" if not issues else "degraded", "version": "3.0.0", "deployment_issues": issues, "features": ["four_agents", "rag", "citations", "streaming", "quality_review", "session_history"]}
+
+
+@app.get("/ready")
+async def ready():
+    issues = config.deployment_issues()
+    if issues:
+        return JSONResponse(status_code=503, content={"status": "not_ready", "missing": issues})
+    return {"status": "ready"}

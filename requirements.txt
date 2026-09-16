@@ -1,9 +1,9 @@
 # Core LangChain stack
-langchain>=0.3.0
-langchain-groq>=0.2.0
-langchain-community>=0.3.0
-langgraph>=0.2.0
-langsmith>=0.1.0
+langchain>=0.3.0,<0.4.0
+langchain-groq>=0.2.0,<0.3.0
+langchain-community>=0.3.0,<0.4.0
+langgraph>=0.2.0,<0.3.0
+langsmith>=0.1.0,<0.3.0
 
 # Backend
 fastapi>=0.115.0
@@ -20,6 +20,14 @@ duckduckgo-search>=6.0.0
 # Utilities
 python-dotenv>=1.0.0
 tiktoken>=0.7.0
+
+# PDF RAG
+pypdf>=5.0.0
+qdrant-client>=1.12.0
+sentence-transformers>=3.0.0
+langchain-text-splitters>=0.3.0,<0.4.0
+python-multipart>=0.0.12
+tavily-python>=0.5.0
 
 # v2: RAG uses Supabase text search (no local model — saves ~500MB RAM on free tier)
 

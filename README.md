@@ -1,258 +1,141 @@
-﻿# AI Multi-Agent Research Assistant
+# Multi-Agent Research Assistant
 
-A multi-agent research system built with LangGraph and LangChain. You give it a topic, and 4 specialized agents — Researcher, Analyst, Writer, and Reviewer — work through a stateful pipeline to produce a polished, self-reviewed report.
+A polished portfolio project that combines multi-agent web research with PDF RAG. Ask a question, upload supporting PDFs when useful, and receive a streamed, cited Markdown report.
 
-The frontend is React + Vite with a black/white design. The backend is FastAPI streaming real-time agent progress via SSE. LangSmith handles full trace monitoring. Supabase stores every report.
+![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)
+![FastAPI](https://img.shields.io/badge/FastAPI-SSE-009688?logo=fastapi)
+![React](https://img.shields.io/badge/React-Vite-61DAFB?logo=react)
+![LangGraph](https://img.shields.io/badge/LangGraph-0.2-7C3AED)
+![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20Search-DC244C)
 
-![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)
-![LangChain](https://img.shields.io/badge/LangChain-0.3-green)
-![LangGraph](https://img.shields.io/badge/LangGraph-0.2-purple)
-![FastAPI](https://img.shields.io/badge/FastAPI-Backend-teal?logo=fastapi)
-![React](https://img.shields.io/badge/React-Frontend-61DAFB?logo=react)
-![OpenAI](https://img.shields.io/badge/OpenAI-gpt--4o--mini-black)
-![Supabase](https://img.shields.io/badge/Supabase-Database-3ECF8E?logo=supabase)
+## Overview
 
----
+The assistant combines current web research from Tavily (with DuckDuckGo fallback) and evidence retrieved from uploaded PDFs. The React UI streams progress and report text live, displays source chunks, manages uploaded documents, and keeps a lightweight report history.
+
+Read [prep.md](prep.md) for the architecture, RAG rationale, deployment runbook, and technical-interview talking points.
 
 ## Architecture
 
-### System Overview
-
-![System Architecture](docs/system-architecture.png)
-
----
-
-### LangGraph Agent State Machine
-
-![LangGraph State Machine](docs/langgraph-state-machine.png)
-
----
-
-## How It Works
-
-Each agent reads from and writes to a shared `ResearchState`. The pipeline is linear — no conditional loops in this version.
-
-```
-User Query → Researcher → Analyst → Writer → Reviewer → Final Report
+```text
+Question
+  → Researcher
+  → Analyst
+  → Writer (streamed)
+  → Reviewer
+  → Final cited report
 ```
 
-Agent progress streams live to the frontend via Server-Sent Events (SSE). When complete, the report is saved to Supabase.
+PDFs are parsed in memory, split into heading-aware, page-aware token chunks, embedded with `BAAI/bge-small-en-v1.5`, and stored durably in Qdrant. Retrieval uses dense candidate recall, lexical reranking, and page diversification; every result retains filename, page, section, and content-hash provenance.
 
----
+## Tech Stack
 
-## The 4 Agents
+| Layer | Technology |
+|---|---|
+| Frontend | React 18, Vite, react-markdown |
+| API | FastAPI, Server-Sent Events |
+| Agent workflow | LangChain, LangGraph, Groq |
+| Web search | Tavily, DuckDuckGo fallback |
+| PDF RAG | pypdf, token-aware chunking, Sentence Transformers, Qdrant |
+| Persistence | Supabase Postgres |
+| Observability | LangSmith |
+| Deployment | Vercel, Render, Qdrant Cloud, Supabase |
 
-| Agent | Built with | Does |
-|-------|-----------|------|
-| **Researcher** | LangChain ReAct Agent + DuckDuckGo | Runs 4–6 web searches, compiles raw findings |
-| **Analyst** | LCEL chain (prompt → llm → parser) | Extracts key insights and confidence scores |
-| **Writer** | LCEL chain | Writes a 1000+ word structured Markdown report |
-| **Reviewer** | LCEL chain | Scores the report and delivers a final edited version |
+## Features
 
----
+- Four-agent research workflow: researcher, analyst, writer, and reviewer.
+- Live SSE status and writer-token streaming.
+- Multiple PDF upload, document management, page-aware retrieval, and visible retrieved sources.
+- Citation-aware reports with PDF references such as `[document.pdf p.3]`.
+- Report history and session memory when Supabase is configured.
+- Markdown, copy, `.md` download, and print-to-PDF export.
 
-## Stack
+## Screenshots
 
-| Layer | Tech | Why |
-|-------|------|-----|
-| LLM | OpenAI gpt-4o-mini | Cheap, fast, high quality |
-| Agent Framework | LangChain 0.3 | LCEL chains, ReAct agents |
-| Orchestration | LangGraph 0.2 | Stateful pipeline |
-| Monitoring | LangSmith | Full trace visibility per run |
-| Web Search | DuckDuckGo | Free, no API key |
-| Backend | FastAPI + SSE | Real-time streaming |
-| Frontend | React + Vite | Clean, fast |
-| Database | Supabase (Postgres) | Stores all reports |
-| Backend Deploy | Render | Free tier |
-| Frontend Deploy | Vercel | Free tier |
+> Add screenshots here before publishing: the idle research screen, an active workflow, uploaded PDFs/retrieved sources, and a final report.
 
----
+## Local Installation
 
-## Project Structure
-
-```
-ai-research-assistant/
-├── api/
-│   └── main.py              # FastAPI app with SSE streaming
-│
-├── agents/
-│   ├── researcher.py        # ReAct Agent + DuckDuckGo
-│   ├── analyst.py           # LCEL chain
-│   ├── writer.py            # LCEL chain
-│   └── reviewer.py          # LCEL chain
-│
-├── tools/
-│   ├── web_search.py        # DuckDuckGo wrapper
-│   └── text_tools.py
-│
-├── frontend/                # React + Vite app
-│   ├── src/
-│   │   ├── App.jsx          # Main app (query, agents, report)
-│   │   ├── api.js           # SSE fetch + history API
-│   │   └── index.css        # Black/white design system
-│   ├── package.json
-│   ├── vite.config.js
-│   └── vercel.json
-│
-├── docs/
-│   ├── system-architecture.png
-│   ├── langgraph-state-machine.png
-│   └── supabase_schema.sql  # Run this in Supabase SQL editor
-│
-├── config.py                # Env vars + LangSmith setup
-├── database.py              # Supabase client
-├── orchestrator.py          # LangGraph pipeline (for CLI use)
-├── main.py                  # CLI runner
-├── render.yaml              # Render deployment config
-├── requirements.txt
-└── .env.example
-```
-
----
-
-## Running Locally
-
-### 1. Clone and install
+Prerequisites: Python 3.11+, Node.js 20+, a Groq API key, and optionally Tavily, Supabase, LangSmith, and Qdrant Cloud credentials.
 
 ```bash
-git clone https://github.com/kushalsai-01/research-agent
-cd research-agent
+git clone <your-repository-url>
+cd Project-2
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-### 2. Set up environment variables
-
-```bash
-cp .env.example .env
-# Then edit .env and fill in your keys
-```
-
-You need at minimum:
-- `OPENAI_API_KEY` — from [platform.openai.com](https://platform.openai.com/api-keys)
-
-Optional but recommended:
-- `SUPABASE_URL` + `SUPABASE_KEY` — from [supabase.com](https://supabase.com) (free)
-- `LANGCHAIN_API_KEY` — from [smith.langchain.com](https://smith.langchain.com) (free)
-
-### 3. Start the backend
+Edit `.env`, then start the backend:
 
 ```bash
 uvicorn api.main:app --reload --port 8000
-# http://localhost:8000
-# http://localhost:8000/health  ← check config status
 ```
 
-### 4. Start the frontend
+In another terminal, start the frontend:
 
 ```bash
 cd frontend
 npm install
 npm run dev
-# http://localhost:5173
 ```
 
----
+Open `http://localhost:5173`. The API health check is available at `http://localhost:8000/health`.
 
-## Supabase Setup
+## Environment Variables
 
-1. Create a free project at [supabase.com](https://supabase.com)
-2. Go to **SQL Editor** and run the contents of `docs/supabase_schema.sql`
-3. Copy your project URL and anon key into `.env`
-
-```sql
-CREATE TABLE IF NOT EXISTS reports (
-  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  topic        TEXT NOT NULL,
-  final_report TEXT,
-  raw_research TEXT,
-  analysis     TEXT,
-  created_at   TIMESTAMPTZ DEFAULT now()
-);
-```
-
-The app works without Supabase — reports just won't be saved to history.
-
----
-
-## LangSmith Setup
-
-1. Create a free account at [smith.langchain.com](https://smith.langchain.com)
-2. Create a project called `ai-research-assistant`
-3. Copy your API key into `.env`:
-
-```env
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=ls__your-key-here
-LANGCHAIN_PROJECT=ai-research-assistant
-```
-
-Every agent run will now appear in LangSmith with full input/output traces, latency, and token usage across all 4 agents.
-
----
+| Variable | Required | Purpose |
+|---|---:|---|
+| `GROQ_API_KEY` | Yes | LLM access |
+| `GROQ_MODEL` | No | Primary Groq model |
+| `GROQ_FALLBACK_MODEL` | No | Retry fallback model |
+| `TAVILY_API_KEY` | Recommended | Web research; DuckDuckGo is the fallback |
+| `QDRANT_URL` / `QDRANT_API_KEY` | Production | Qdrant Cloud connection; omitted uses local Qdrant |
+| `QDRANT_COLLECTION` | No | Defaults to `research_documents` |
+| `SUPABASE_URL` / `SUPABASE_KEY` | Optional | Report history and session memory |
+| `LANGCHAIN_API_KEY` | Optional | LangSmith tracing |
+| `CORS_ORIGINS` | Production | Comma-separated frontend origins |
+| `VITE_API_URL` | Frontend production | Render API URL, without a trailing slash |
 
 ## Deployment
 
-### Backend → Render
+### Backend: Render
 
-1. Push this repo to GitHub
-2. [render.com](https://render.com) → New Web Service → connect the repo
-3. Render will auto-detect `render.yaml` — just add your env vars:
-   - `OPENAI_API_KEY`
-   - `SUPABASE_URL`
-   - `SUPABASE_KEY`
-   - `LANGCHAIN_API_KEY`
-4. It'll deploy automatically on every push to main
+1. Create a Render Web Service from this repository; `render.yaml` supplies the build and start commands.
+2. Add `GROQ_API_KEY`, `TAVILY_API_KEY`, Supabase variables, and Qdrant Cloud variables.
+3. Set `CORS_ORIGINS` to your exact Vercel URL, for example `https://research-agent.vercel.app`.
+4. Deploy, then verify `https://<render-service>/health`.
 
-### Frontend → Vercel
+### Frontend: Vercel
 
-1. [vercel.com](https://vercel.com) → Add New Project → import this repo
-2. Set **Root Directory** to `frontend`
-3. Add environment variable:
-   - `VITE_API_URL` = your Render backend URL (e.g. `https://your-app.onrender.com`)
-4. Deploy — Vercel handles the rest
+1. Import the repository and set **Root Directory** to `frontend`.
+2. Set `VITE_API_URL` to the Render backend URL.
+3. Build command: `npm run build`; output directory: `dist`.
+4. Deploy and add the generated Vercel URL to Render's `CORS_ORIGINS`.
 
-### Verify deployment
+### Qdrant and Supabase
 
-```
-GET https://your-app.onrender.com/health
-```
+Create a Qdrant Cloud cluster and copy its HTTPS URL/API key into Render. In Supabase, run `docs/supabase_schema.sql`; on an existing database, also apply `docs/supabase_production_migration.sql`. The older `docs/supabase_v2_migration.sql` is optional legacy report-vector support.
 
-Returns:
-```json
-{
-  "status": "ok",
-  "langsmith_tracing": true,
-  "supabase_configured": true,
-  "model": "gpt-4o-mini"
-}
+## Folder Structure
+
+```text
+agents/       Agent prompts and small workflow adapters
+api/          FastAPI app and SSE endpoints
+frontend/     React/Vite client
+tools/        Web search and citation utilities
+rag.py        PDF ingestion, embeddings, Qdrant retrieval
+database.py   Supabase report persistence
+memory.py     Lightweight session memory
+docs/         Database schema and architecture assets
 ```
 
----
+## Future Improvements
 
-## Cost
-
-Everything runs on free tiers.
-
-| Service | Cost |
-|---------|------|
-| OpenAI gpt-4o-mini | ~$0.01–0.05 per report |
-| Render | Free |
-| Vercel | Free |
-| Supabase | Free (500MB) |
-| LangSmith | Free (5K traces/month) |
-
----
+- Add academic-search and richer document parsers.
+- Add automated end-to-end tests and a CI workflow.
+- Add source-quality scoring and richer citation rendering.
 
 ## License
 
 MIT
-
----
-
-## Credits
-
-- [LangChain](https://github.com/langchain-ai/langchain)
-- [LangGraph](https://github.com/langchain-ai/langgraph)
-- [LangSmith](https://smith.langchain.com)
-- [Supabase](https://supabase.com)
-- [OpenAI](https://openai.com)

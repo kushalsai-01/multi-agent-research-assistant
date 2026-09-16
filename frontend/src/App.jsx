@@ -1,30 +1,25 @@
-﻿import { useState, useCallback, useRef, useEffect } from "react"
-import { streamResearch, streamDebate, streamHitl, streamResume, fetchHistory, fetchReport, fetchMemory } from "./api"
+import { useState, useCallback, useRef, useEffect } from "react"
+import { streamResearch, fetchHistory, fetchReport, fetchMemory, fetchDocuments, uploadDocument, deleteDocument } from "./api"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
 const STANDARD_AGENTS = [
   { id: "researcher", label: "Researcher", idle: "Web search" },
-  { id: "analyst",   label: "Analyst",    idle: "Insights"  },
+  { id: "analyst", label: "Analyst", idle: "Evidence analysis" },
   { id: "writer",    label: "Writer",     idle: "Report"    },
   { id: "reviewer",  label: "Reviewer",   idle: "QA"        },
 ]
 
-const DEBATE_AGENTS = [
-  { id: "researcher", label: "Researcher", idle: "Web search" },
-  { id: "analyst",   label: "Analyst",    idle: "Insights"  },
-  { id: "optimist",  label: "Optimist",   idle: "Positive"  },
-  { id: "skeptic",   label: "Skeptic",    idle: "Critical"  },
-  { id: "judge",     label: "Judge",      idle: "Synthesis"  },
+const WORKFLOW_STEPS = [
+  { id: "researcher", label: "Web Search", icon: "⌕" },
+  { id: "analyst", label: "Analyse", icon: "◇" },
+  { id: "writer", label: "Writer", icon: "✦" },
+  { id: "reviewer", label: "Reviewer", icon: "✓" },
+  { id: "completed", label: "Completed", icon: "✓" },
 ]
 
 const AGENT_ICONS = {}
 
-const MODES = [
-  { id: "standard", label: "Standard",  desc: "4-agent pipeline · researcher → analyst → writer → reviewer" },
-  { id: "debate",   label: "Debate",    desc: "Optimist vs Skeptic · Judge synthesises a final verdict" },
-  { id: "hitl",     label: "HITL",      desc: "You review raw research before the pipeline continues" },
-]
 
 const EXAMPLES = [
   "Latest breakthroughs in quantum computing 2025",
@@ -70,7 +65,7 @@ function AgentCard({ a, s }) {
   const cardClass = status === "retrying" ? "running" : (status !== "idle" ? status : "")
 
   return (
-    <div className={`agent ${cardClass}`}>
+    <div className={`agent ${cardClass}`} aria-live={status === "running" ? "polite" : undefined}>
       <div className="agent-head">
         <span className="agent-name">{a.label}</span>
         <Dot status={dotStatus} />
@@ -88,7 +83,7 @@ function AgentCard({ a, s }) {
   )
 }
 
-function HistoryDrawer({ open, onClose, onLoad }) {
+function HistoryDrawer({ open, onClose, onLoad, sessionId }) {
   const [items,   setItems]   = useState([])
   const [loading, setLoading] = useState(false)
   const [fetched, setFetched] = useState(false)
@@ -97,7 +92,7 @@ function HistoryDrawer({ open, onClose, onLoad }) {
     if (open && !fetched) {
       setFetched(true)
       setLoading(true)
-      fetchHistory()
+      fetchHistory(sessionId)
         .then(d => setItems(Array.isArray(d) ? d : []))
         .catch(() => setItems([]))
         .finally(() => setLoading(false))
@@ -106,7 +101,7 @@ function HistoryDrawer({ open, onClose, onLoad }) {
   }, [open, fetched])
 
   const handleLoad = async (id) => {
-    const r = await fetchReport(id).catch(() => null)
+    const r = await fetchReport(id, sessionId).catch(() => null)
     if (r) { onLoad(r); onClose() }
   }
 
@@ -146,65 +141,6 @@ function HistoryDrawer({ open, onClose, onLoad }) {
   )
 }
 
-function ModeToggle({ mode, setMode, disabled }) {
-  const current = MODES.find(m => m.id === mode)
-  return (
-    <div className="mode-wrap">
-      <div className="mode-toggle">
-        {MODES.map(m => (
-          <button
-            key={m.id}
-            className={`mode-btn ${mode === m.id ? "mode-active" : ""}`}
-            onClick={() => setMode(m.id)}
-            disabled={disabled}
-            title={m.desc}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
-      {current && <div className="mode-desc">{current.desc}</div>}
-    </div>
-  )
-}
-
-function HITLPanel({ sessionId, preview, onResume, resuming }) {
-  const [feedback, setFeedback] = useState("")
-
-  return (
-    <div className="hitl-panel">
-      <div className="hitl-head">
-        <span className="hitl-badge">HUMAN REVIEW</span>
-        <span className="hitl-session">Session: {sessionId}</span>
-      </div>
-      <div className="hitl-body">
-        <p className="hitl-msg">Research is complete. Review the findings above, optionally add feedback, then click Resume.</p>
-        {preview && (
-          <details className="hitl-preview">
-            <summary>Research preview</summary>
-            <pre>{preview}</pre>
-          </details>
-        )}
-        <textarea
-          className="hitl-feedback"
-          placeholder="Optional: Add feedback or additional instructions for the analyst..."
-          value={feedback}
-          onChange={e => setFeedback(e.target.value)}
-          rows={3}
-          disabled={resuming}
-        />
-        <button
-          className="btn btn-run hitl-resume-btn"
-          onClick={() => onResume(feedback)}
-          disabled={resuming}
-        >
-          {resuming ? "Resuming..." : "Resume Pipeline →"}
-        </button>
-      </div>
-    </div>
-  )
-}
-
 function RagBanner({ data }) {
   if (!data) return null
   return (
@@ -236,50 +172,75 @@ function FeatureRow() {
   )
 }
 
-function DebateCards({ optimist, skeptic }) {
-  if (!optimist && !skeptic) return null
+function WorkflowSteps({ agents, completed, failed }) {
+  const getStatus = (step) => {
+    if (step.id === "completed") return completed ? "done" : "idle"
+    if (failed && agents[step.id]?.status === "error") return "error"
+    return agents[step.id]?.status || "idle"
+  }
+
   return (
-    <div className="debate-cards">
-      {optimist && (
-        <div className="debate-card debate-optimist">
-          <div className="debate-card-head">Optimist Perspective</div>
-          <div className="md debate-card-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{optimist}</ReactMarkdown>
+    <div className="workflow" aria-label="Research workflow progress">
+      {WORKFLOW_STEPS.map((step, index) => {
+        const status = getStatus(step)
+        return <div className={`workflow-step workflow-${status}`} key={step.id}>
+          <div className="workflow-marker" aria-hidden="true">
+            {status === "done" ? "✓" : status === "error" ? "!" : step.icon}
           </div>
+          <span>{step.label}</span>
+          {index < WORKFLOW_STEPS.length - 1 && <i className="workflow-line" aria-hidden="true" />}
         </div>
-      )}
-      {skeptic && (
-        <div className="debate-card debate-skeptic">
-          <div className="debate-card-head">Skeptic Analysis</div>
-          <div className="md debate-card-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{skeptic}</ReactMarkdown>
-          </div>
-        </div>
-      )}
+      })}
     </div>
   )
 }
 
+function DocumentsPanel({ documents, uploading, onUpload, onDelete }) {
+  const inputRef = useRef(null)
+  return (
+    <section className="documents-panel">
+      <div className="documents-head">
+        <div><div className="documents-title">Uploaded Documents</div><div className="documents-subtitle">PDFs are searched alongside web research</div></div>
+        <input ref={inputRef} type="file" accept="application/pdf" hidden onChange={e => e.target.files?.[0] && onUpload(e.target.files[0])} />
+        <button className="btn btn-ghost btn-sm" onClick={() => inputRef.current?.click()} disabled={uploading}>
+          {uploading ? "Uploading…" : "Upload PDF"}
+        </button>
+      </div>
+      {uploading && <div className="upload-progress"><span /></div>}
+      {documents.length === 0 ? <div className="documents-empty">No PDFs uploaded yet.</div> : documents.map(doc => (
+        <div className="document-row" key={doc.id}>
+          <div><strong>{doc.filename}</strong><span>{doc.chunks} chunks</span></div>
+          <button className="document-delete" onClick={() => onDelete(doc.id)}>Delete</button>
+        </div>
+      ))}
+    </section>
+  )
+}
+
+function RetrievedSources({ sources }) {
+  if (!sources.length) return null
+  return <section className="sources-panel"><div className="documents-title">Retrieved PDF Sources</div>
+    {sources.map((source, index) => <div className="source-row" key={`${source.chunk_id}-${index}`}>
+      <strong>[{source.metadata?.filename || "Document"} p.{source.page_number}]</strong><span>score {source.score}</span><p>{source.chunk_text}</p>
+    </div>)}
+  </section>
+}
+
 export default function App() {
   const [query,       setQuery]       = useState("")
-  const [mode,        setMode]        = useState("standard")
   const [running,     setRunning]     = useState(false)
   const [agents,      setAgents]      = useState({})
   const [report,      setReport]      = useState(null)
   const [error,       setError]       = useState(null)
   const [showHistory, setShowHistory] = useState(false)
   const [ragHit,      setRagHit]      = useState(null)
-  const [debateData,  setDebateData]  = useState({ optimist: null, skeptic: null })
   const [language,    setLanguage]    = useState("English")
   const [sessionId]                   = useState(getOrCreateSessionId)
   const [streamingText, setStreamingText] = useState("")
   const [pastSearches,  setPastSearches] = useState([])
-
-  // HITL state
-  const [hitlPaused,    setHitlPaused]    = useState(false)
-  const [hitlSessionId, setHitlSessionId] = useState(null)
-  const [hitlPreview,   setHitlPreview]   = useState("")
-  const [resuming,      setResuming]      = useState(false)
+  const [documents, setDocuments] = useState([])
+  const [uploading, setUploading] = useState(false)
+  const [retrievedSources, setRetrievedSources] = useState([])
 
   const reportRef = useRef(null)
   const txRef     = useRef(null)
@@ -294,61 +255,40 @@ export default function App() {
     if (event === "agent_done")    setAgent(data.agent, { status: "done",     duration: data.duration, chars: data.chars, stat: data.stat || null })
     if (event === "agent_error")   setAgent(data.agent, { status: "error",    detail: data.message })
     if (event === "rag_hit")       setRagHit(data)
+    if (event === "retrieved_sources") setRetrievedSources(data.sources || [])
     if (event === "writer_token")  setStreamingText(t => t + data.token)
     if (event === "revision_start") {
       // Flash the writer back to running state for revisions
       setAgent("writer", { status: "idle", detail: `Revision ${data.revision} starting...` })
       setAgent("reviewer", { status: "idle" })
     }
-    if (event === "hitl_pause") {
-      setHitlPaused(true)
-      setHitlSessionId(data.session_id)
-      setHitlPreview(data.research_preview || "")
-    }
     if (event === "complete") {
       setReport(data)
       setStreamingText("")
-      if (data.optimist_report) setDebateData({ optimist: data.optimist_report, skeptic: data.skeptic_report })
       setRunning(false)
-      setResuming(false)
-      setHitlPaused(false)
       // Refresh past searches after completion
       fetchMemory(sessionId).then(h => setPastSearches(h)).catch(() => {})
       setTimeout(() => reportRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100)
     }
-    if (event === "pipeline_error") { setError(data.message); setRunning(false); setResuming(false); setStreamingText("") }
+    if (event === "pipeline_error") { setError(data.message); setRunning(false); setStreamingText("") }
   }, [setAgent])
 
   const run = async () => {
     if (!query.trim() || running) return
     setRunning(true); setReport(null); setError(null); setAgents({}); setRagHit(null)
-    setDebateData({ optimist: null, skeptic: null }); setHitlPaused(false); setHitlSessionId(null)
+    setRetrievedSources([])
     setStreamingText("")
 
     const opts = { language, sessionId }
     try {
-      if (mode === "debate") {
-        await streamDebate(query.trim(), handleEvent, opts)
-      } else if (mode === "hitl") {
-        await streamHitl(query.trim(), handleEvent, opts)
-      } else {
-        await streamResearch(query.trim(), handleEvent, opts)
-      }
+      await streamResearch(query.trim(), handleEvent, opts)
     } catch (e) { setError(e.message); setRunning(false) }
-  }
-
-  const handleResume = async (feedback) => {
-    if (!hitlSessionId) return
-    setResuming(true); setHitlPaused(false)
-    try {
-      await streamResume(hitlSessionId, feedback, handleEvent)
-    } catch (e) { setError(e.message); setResuming(false); setRunning(false) }
   }
 
   const reset = () => {
     setQuery(""); setReport(null); setError(null); setAgents({}); setRunning(false)
-    setRagHit(null); setDebateData({ optimist: null, skeptic: null })
-    setHitlPaused(false); setHitlSessionId(null); setResuming(false); setStreamingText("")
+    setRagHit(null)
+    setStreamingText("")
     txRef.current?.focus()
   }
 
@@ -359,14 +299,28 @@ export default function App() {
     }
   }, [running, report, sessionId])
 
+  useEffect(() => { fetchDocuments(sessionId).then(d => setDocuments(Array.isArray(d) ? d : [])).catch(() => {}) }, [sessionId])
+
+  const handleUpload = async (file) => {
+    setUploading(true); setError(null)
+    try { await uploadDocument(file, sessionId); setDocuments(await fetchDocuments(sessionId)) }
+    catch (e) { setError(e.message) }
+    finally { setUploading(false) }
+  }
+
+  const handleDeleteDocument = async (id) => {
+    try { await deleteDocument(id, sessionId); setDocuments(d => d.filter(doc => doc.id !== id)) }
+    catch (e) { setError(e.message) }
+  }
+
   const loadHistoryReport = (r) => {
     setReport({ report: r.final_report, query: r.topic, report_id: r.id })
-    setAgents({}); setError(null); setRagHit(null); setDebateData({ optimist: null, skeptic: null })
+    setAgents({}); setError(null); setRagHit(null)
     setTimeout(() => reportRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100)
   }
 
-  const pipelineVisible = running || resuming || Object.keys(agents).length > 0
-  const currentAgents = mode === "debate" ? DEBATE_AGENTS : STANDARD_AGENTS
+  const pipelineVisible = running || Object.keys(agents).length > 0
+  const currentAgents = STANDARD_AGENTS
 
   return (
     <div className="shell">
@@ -392,6 +346,7 @@ export default function App() {
         open={showHistory}
         onClose={() => setShowHistory(false)}
         onLoad={loadHistoryReport}
+        sessionId={sessionId}
       />
 
       {/* Page */}
@@ -409,10 +364,6 @@ export default function App() {
         )}
 
         {/* Mode Toggle */}
-        {!pipelineVisible && !report && (
-          <ModeToggle mode={mode} setMode={setMode} disabled={running} />
-        )}
-
         {/* Input */}
         <div className="input-card">
           <textarea
@@ -426,7 +377,7 @@ export default function App() {
             disabled={running}
           />
           <div className="input-bar">
-            <span className="input-hint">⌘ Enter to run · {mode} mode</span>
+            <span className="input-hint">⌘ Enter to run · four-agent research</span>
             <select
               className="lang-select"
               value={language}
@@ -437,10 +388,12 @@ export default function App() {
               {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
             </select>
             <button className="btn btn-run" onClick={run} disabled={running || !query.trim()}>
-              {running ? "Researching..." : `Run ${mode === "debate" ? "Debate" : mode === "hitl" ? "HITL" : ""} →`}
+              {running ? "Researching..." : "Run Research →"}
             </button>
           </div>
         </div>
+
+        <DocumentsPanel documents={documents} uploading={uploading} onUpload={handleUpload} onDelete={handleDeleteDocument} />
 
         {/* Examples — only when idle */}
         {!pipelineVisible && !report && (
@@ -472,15 +425,16 @@ export default function App() {
         <RagBanner data={ragHit} />
 
         {/* Error */}
-        {error && <div className="err" style={{ marginTop: 20 }}>⚠ {error}</div>}
+        {error && <div className="err" role="alert" style={{ marginTop: 20 }}><span>!</span><div><strong>Research interrupted</strong><br />{error}</div></div>}
 
         {/* Pipeline */}
         {pipelineVisible && (
           <div className="pipeline" style={{ marginTop: 32 }}>
             <div className="pipeline-label">
-              Agent Pipeline {mode !== "standard" && <span className="pipeline-mode">· {mode.toUpperCase()}</span>}
+              Agent Pipeline
             </div>
-            <div className={`agents ${currentAgents.length === 5 ? "agents-5" : ""}`}>
+            <WorkflowSteps agents={agents} completed={Boolean(report)} failed={Boolean(error)} />
+            <div className="agents">
               {currentAgents.map(a => (
                 <AgentCard key={a.id} a={a} s={agents[a.id]} />
               ))}
@@ -490,32 +444,17 @@ export default function App() {
 
         {/* Streaming Writer Text */}
         {streamingText && (
-          <div className="writer-stream">
-            <div className="writer-stream-label">Writing report…</div>
+          <div className="writer-stream" aria-live="polite">
+            <div className="writer-stream-label"><span className="stream-dot" />Writing report<span className="stream-ellipsis">…</span></div>
             <pre className="writer-stream-text">{streamingText}</pre>
           </div>
         )}
 
-        {/* HITL Panel */}
-        {hitlPaused && (
-          <HITLPanel
-            sessionId={hitlSessionId}
-            preview={hitlPreview}
-            onResume={handleResume}
-            resuming={resuming}
-          />
-        )}
-
-        {/* Debate Side-by-Side Cards */}
-        {report && mode === "debate" && (
-          <DebateCards optimist={debateData.optimist} skeptic={debateData.skeptic} />
-        )}
-
-        {/* Report */}
-        {report?.report && (
-          <div className="report-wrap" ref={reportRef} style={{ marginTop: pipelineVisible ? 24 : 32 }}>
-            <div className="report-top">
-              <span className="report-top-label">
+        <RetrievedSources sources={retrievedSources} />
+        {report && (
+          <div className="report" ref={reportRef}>
+            <div className="report-head">
+              <span className="report-title">
                 Final Report
                 {report.quality_score ? ` · Score ${report.quality_score}/10` : ""}
                 {report.revisions > 1 ? ` · ${report.revisions} revisions` : ""}

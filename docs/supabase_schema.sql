@@ -6,8 +6,10 @@ CREATE TABLE IF NOT EXISTS reports (
   final_report TEXT,
   raw_research TEXT,
   analysis     TEXT,
+  session_id   TEXT NOT NULL,
   created_at   TIMESTAMPTZ DEFAULT now()
 );
 
 -- Optional: index for faster ordering by date
 CREATE INDEX IF NOT EXISTS reports_created_at_idx ON reports (created_at DESC);
+CREATE INDEX IF NOT EXISTS reports_session_created_at_idx ON reports (session_id, created_at DESC);

@@ -15,6 +15,8 @@ class KeyFinding(BaseModel):
 class AnalysisOutput(BaseModel):
     key_findings: List[KeyFinding] = Field(description="Top 5 key findings with confidence scores")
     thematic_analysis: str = Field(description="Grouped thematic insights in markdown")
+    key_entities_and_locations: List[str] = Field(default_factory=list, description="Key people, companies, organizations, and geographic locations mentioned")
+    key_dates: List[str] = Field(default_factory=list, description="Significant dates and years mentioned")
     data_and_statistics: str = Field(description="All numbers, percentages, dates found")
     gaps_and_contradictions: str = Field(description="Missing info or conflicting data")
     source_reliability: str = Field(description="Reliability assessment per source")

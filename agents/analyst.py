@@ -9,10 +9,12 @@ INSTRUCTIONS:
 1. Read all the raw research data carefully.
 2. Identify the TOP 5 most important findings with confidence scores (1-10).
 3. Group related information into coherent themes/categories.
-4. Highlight any statistics, numbers, or quantitative data.
-5. Note contradictions or gaps in the research.
-6. Assess the reliability of each source (high / medium / low).
-7. Provide an overall confidence score (1-10) for the entire research.
+4. Extract key entities (people, companies, organizations) and locations.
+5. Extract key dates and timeframes.
+6. Highlight any statistics, numbers, or quantitative data.
+7. Note contradictions or gaps in the research.
+8. Assess the reliability of each source (high / medium / low).
+9. Provide an overall confidence score (1-10) for the entire research.
 
 For each key finding, include supporting source URLs where available.
 
@@ -48,6 +50,14 @@ def analyst_to_str(output: AnalysisOutput) -> str:
 
     lines.append("\n## Thematic Analysis\n")
     lines.append(output.thematic_analysis)
+
+    if output.key_entities_and_locations:
+        lines.append("\n\n## Key Entities & Locations\n")
+        lines.append(", ".join(output.key_entities_and_locations))
+
+    if output.key_dates:
+        lines.append("\n\n## Key Dates\n")
+        lines.append(", ".join(output.key_dates))
 
     lines.append("\n\n## Data & Statistics\n")
     lines.append(output.data_and_statistics)

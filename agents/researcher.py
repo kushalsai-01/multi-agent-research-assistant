@@ -49,7 +49,7 @@ def _is_rate_limit(e: Exception) -> bool:
     return "429" in s or "rate limit" in s or "ratelimit" in s or "too many requests" in s
 
 
-def run_researcher(topic: str) -> tuple:
+def run_researcher(topic: str, plan: str = "", gaps: str = "") -> tuple:
     """
     Run the researcher agent. Automatically falls back to the smaller model
     if the primary model is rate-limited (TPM or TPD exhausted).
@@ -58,8 +58,15 @@ def run_researcher(topic: str) -> tuple:
     def _run(model: str | None = None):
         agent = build_researcher_agent(model)
         tracker = CitationTracker()
+
+        prompt_content = f"Research the following topic thoroughly:\n\n{topic}"
+        if plan:
+            prompt_content += f"\n\nResearch Plan & Guidance:\n{plan}"
+        if gaps:
+            prompt_content += f"\n\nTargeted Gaps & Contradictions to Investigate (Priority Focus for Retry):\n{gaps}"
+
         result = agent.invoke(
-            {"messages": [HumanMessage(content=f"Research the following topic thoroughly:\n\n{topic}")]},
+            {"messages": [HumanMessage(content=prompt_content)]},
             config={"callbacks": [tracker]},
         )
         messages = result.get("messages", [])

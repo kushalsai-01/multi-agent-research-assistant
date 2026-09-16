@@ -12,8 +12,10 @@ INSTRUCTIONS:
 2. Use clear, professional language suitable for a general audience.
 3. Include an executive summary (3-4 sentences).
 4. Create clear main sections with headings.
-5. Include relevant statistics and data points in context.
+5. Incorporate key entities, locations, key dates, statistics, and data points naturally in context.
 6. All referenced URLs go in the sources list.
+6a. Every factual paragraph MUST end with an inline source reference. For PDF evidence,
+    use the exact format [filename p.X] supplied in the context. For web evidence, use a URL.
 7. Keep the report between 800-1500 words.
 8. End with 3-5 key takeaways.
 

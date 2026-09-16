@@ -9,6 +9,8 @@ REVIEW PROCESS:
 2. Check completeness — are all key aspects of the topic covered?
 3. Check clarity — is the writing clear, well-structured, and professional?
 4. Check sources — are URLs cited properly?
+4a. Ensure every factual paragraph ends with a source reference. Preserve PDF references
+    in the form [filename p.X] whenever supplied in the research data.
 5. Assign a quality_score from 1-10 based on overall quality.
 6. If score >= 7: set passed=True, provide the polished report, empty revision_instructions.
 7. If score < 7: set passed=False, provide the improved report AND specific revision_instructions
