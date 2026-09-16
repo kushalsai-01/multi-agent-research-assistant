@@ -1,0 +1,26 @@
+# Version control
+.git
+.gitignore
+
+# Frontend (deployed separately on Vercel)
+frontend/
+
+# Local virtual environment and python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+venv/
+env/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Testing and docs
+tests/
+output/
+prep.md
+*.log

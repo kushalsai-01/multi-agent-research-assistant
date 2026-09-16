@@ -1,0 +1,19 @@
+# Ignore Python backend from Vercel deployments
+api/
+agents/
+tools/
+docs/
+requirements.txt
+runtime.txt
+render.yaml
+Dockerfile
+.dockerignore
+database.py
+rag.py
+config.py
+memory.py
+mcp_server.py
+langsmith_eval.py
+prep.md
+output/
+data/
